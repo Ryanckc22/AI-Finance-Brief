@@ -4,7 +4,7 @@ import smtplib
 from email.mime.text import MIMEText
 import os
 import openai
-import yfinance as yf  # 美股数据
+import yfinance as yf
 
 # ===== 北向资金监控 =====
 def northbound_funds():
@@ -58,17 +58,20 @@ def us_tech_stocks():
 def ai_report(data_text):
     openai.api_key = os.getenv("OPENAI_API_KEY")
     prompt = f"""
-请基于以下市场数据生成一份专业投资策略报告：
+你是资深券商策略首席分析师。
+
+请根据以下市场数据生成投资策略报告：
 {data_text}
 
 要求：
-1. 每部分至少包含3条数据驱动分析。
-2. 每条分析都必须引用具体股票或板块及数值变化。
-3. 严格按照结构输出：宏观环境 / 全球市场 / A股市场 / 行业机会 / 投资风险。
-4. 不允许模板化或空泛描述。
+1. 每条北向资金、龙虎榜、美股数据必须被分析并引用具体数值。
+2. 每条分析必须包含股票/板块名称和涨跌或净买入金额。
+3. 报告结构：宏观环境 / 全球市场 / A股市场 / 行业机会 / 投资风险。
+4. 禁止任何模板化描述，必须基于数据分析。
+5. 输出必须可直接发邮件阅读。
 """
     r = openai.ChatCompletion.create(
-        model="gpt-3.5-turbo",  # 使用 GPT-3.5-turbo
+        model="gpt-3.5-turbo",
         messages=[
             {"role": "system", "content": "你是资深券商策略首席分析师，生成报告必须基于提供的数据，不允许写模板。"},
             {"role": "user", "content": prompt}
