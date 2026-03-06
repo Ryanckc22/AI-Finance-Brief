@@ -6,7 +6,7 @@ import os
 import openai
 import yfinance as yf  # 美股数据
 
-# ===== 1️⃣ 北向资金监控 =====
+# ===== 北向资金监控 =====
 def northbound_funds():
     url = "http://push2.eastmoney.com/api/qt/kamt/north?fields=f12,f14,f2,f3"
     try:
@@ -23,7 +23,7 @@ def northbound_funds():
     except Exception as e:
         return [f"北向资金数据抓取失败: {e}"]
 
-# ===== 2️⃣ 龙虎榜监控 =====
+# ===== 龙虎榜监控 =====
 def longhubang():
     url = "http://push2.eastmoney.com/api/qt/stock/getsuspension?fields=f12,f14,f2,f3"
     try:
@@ -39,7 +39,7 @@ def longhubang():
     except Exception as e:
         return [f"龙虎榜数据抓取失败: {e}"]
 
-# ===== 3️⃣ 美股科技股监控 =====
+# ===== 美股科技股监控 =====
 def us_tech_stocks():
     symbols = ["NVDA", "MSFT", "TSLA"]
     result = []
@@ -54,35 +54,35 @@ def us_tech_stocks():
             result.append(f"{i}. {s} 数据抓取失败: {e}")
     return result
 
-# ===== 4️⃣ AI策略生成 =====
+# ===== AI策略生成 =====
 def ai_report(data_text):
     openai.api_key = os.getenv("OPENAI_API_KEY")
     prompt = f"""
-请根据以下市场数据生成一份专业投资策略报告：
+请基于以下市场数据生成一份专业投资策略报告：
 {data_text}
 
 要求：
 1. 每部分至少包含3条数据驱动分析。
-2. 必须引用具体股票、板块名称和数值变化。
-3. 保持报告结构：宏观环境 / 全球市场 / A股市场 / 行业机会 / 投资风险。
-4. 严格基于数据分析，不允许模板化或空泛描述。
+2. 每条分析都必须引用具体股票或板块及数值变化。
+3. 严格按照结构输出：宏观环境 / 全球市场 / A股市场 / 行业机会 / 投资风险。
+4. 不允许模板化或空泛描述。
 """
     r = openai.ChatCompletion.create(
-        model="gpt-4o-mini",
+        model="gpt-3.5-turbo",  # 使用 GPT-3.5-turbo
         messages=[
             {"role": "system", "content": "你是资深券商策略首席分析师，生成报告必须基于提供的数据，不允许写模板。"},
             {"role": "user", "content": prompt}
         ],
         temperature=0.3,
-        max_tokens=1200
+        max_tokens=1500
     )
     return r["choices"][0]["message"]["content"]
 
-# ===== 5️⃣ 邮件发送 =====
+# ===== 邮件发送 =====
 def send_mail(content):
     sender = os.getenv("EMAIL_USER")
     password = os.getenv("EMAIL_PASS")
-    receiver = sender  # 可以改成其他邮箱
+    receiver = sender
 
     msg = MIMEText(content)
     msg["Subject"] = "AI量化投资日报"
@@ -98,14 +98,13 @@ def send_mail(content):
     except Exception as e:
         print(f"邮件发送失败: {e}")
 
-# ===== 6️⃣ 主程序 =====
+# ===== 主程序 =====
 def main():
     today = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
 
     north = northbound_funds()
     lhb = longhubang()
     us_tech = us_tech_stocks()
-
     sectors = ["新能源", "半导体", "医药", "光伏"]
     sector_info = [f"{i+1}. {s} 板块今日表现优异" for i, s in enumerate(sectors)]
 
