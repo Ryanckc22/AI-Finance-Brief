@@ -3,7 +3,7 @@ name: AI Finance Daily
 # 触发条件：每天北京时间 08:30 和 22:30
 on:
   schedule:
-    - cron: '30 0,14 * * *'  # UTC 时间，对应北京时间 08:30 和 22:30
+    - cron: '30 0,14 * * *'  # UTC 时间对应北京时间 08:30 和 22:30
   workflow_dispatch:  # 可手动触发
 
 jobs:
