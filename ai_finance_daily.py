@@ -7,7 +7,8 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import os
 import yfinance as yf
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 # ===== 调试工具 =====
 def log(tag: str, msg: str):
@@ -195,16 +196,13 @@ def ai_report(data_text: str) -> str:
     调用 Google Gemini 1.5 Flash 生成报告。
     在 prompt 里明确：若某数据显示'抓取失败'则跳过该项，不编造内容。
     """
-    genai.configure(api_key=os.environ["GEMINI_API_KEY"])
+    client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
 
-    model = genai.GenerativeModel(
-        model_name="gemini-1.5-flash",
-        system_instruction=(
-            "你是资深券商策略首席分析师。"
-            "报告必须100%基于提供的真实数据。"
-            "若某项数据标注'抓取失败'或'暂无数据'，直接跳过该项，不得编造。"
-            "禁止出现任何模板化描述。"
-        ),
+    system_instruction = (
+        "你是资深券商策略首席分析师。"
+        "报告必须100%基于提供的真实数据。"
+        "若某项数据标注'抓取失败'或'暂无数据'，直接跳过该项，不得编造。"
+        "禁止出现任何模板化描述。"
     )
 
     prompt = f"""
@@ -219,9 +217,10 @@ def ai_report(data_text: str) -> str:
 
 【二、A股资金面】
 分析北向资金净买入规模，外资态度是流入还是流出，幅度如何。
+注意：若净买入显示±520亿或±1040亿整数，说明是非交易时段占位数据，请注明"今日北向资金数据暂未更新"。
 
 【三、龙虎榜解读】
-点评净买入额最高的前3只个股，说明可能原因。
+若有龙虎榜数据则点评前3名；若标注失败则跳过本节。
 
 【四、板块轮动】
 对比各ETF涨跌幅，明确指出今日最强和最弱板块，给出逻辑。
@@ -232,7 +231,15 @@ def ai_report(data_text: str) -> str:
 要求：约600字，每句结论必须对应上方某条具体数据。
 """
 
-    response = model.generate_content(prompt)
+    response = client.models.generate_content(
+        model="gemini-2.0-flash",
+        config=types.GenerateContentConfig(
+            system_instruction=system_instruction,
+            temperature=0.3,
+            max_output_tokens=1500,
+        ),
+        contents=prompt,
+    )
     log("Gemini", "报告生成成功")
     return response.text
 
