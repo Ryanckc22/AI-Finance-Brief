@@ -1,5 +1,4 @@
 import requests
-from bs4 import BeautifulSoup
 import datetime
 import smtplib
 from email.mime.text import MIMEText
@@ -66,20 +65,19 @@ def us_tech_stocks():
 def ai_report(data_text):
     openai.api_key = os.getenv("OPENAI_API_KEY")
     prompt = f"""
-你是资深券商策略首席分析师。
 请根据以下市场数据生成一份专业投资策略报告：
 {data_text}
 
 要求：
-1. 每部分至少包含3条数据驱动的分析。
-2. 提及具体股票/板块名称和数值变化。
-3. 语言简洁、专业，适合发送给投资客户。
-4. 保留报告结构：宏观环境 / 全球市场 / A股市场 / 行业机会 / 投资风险
+1. 每部分至少包含3条数据驱动分析。
+2. 必须引用具体股票、板块名称和数值变化。
+3. 保持报告结构：宏观环境 / 全球市场 / A股市场 / 行业机会 / 投资风险。
+4. 严格基于数据分析，不允许模板化或空泛描述。
 """
     r = openai.ChatCompletion.create(
         model="gpt-4o-mini",
         messages=[
-            {"role": "system", "content": "你是资深券商策略首席分析师，生成报告必须基于提供的数据，不允许写空模板。"},
+            {"role": "system", "content": "你是资深券商策略首席分析师，生成报告必须基于提供的数据，不允许写模板。"},
             {"role": "user", "content": prompt}
         ],
         temperature=0.3,
@@ -91,7 +89,7 @@ def ai_report(data_text):
 def send_mail(content):
     sender = os.getenv("EMAIL_USER")
     password = os.getenv("EMAIL_PASS")
-    receiver = sender  # 发给自己，可改为其他邮箱
+    receiver = sender  # 可以改成其他邮箱
 
     msg = MIMEText(content)
     msg["Subject"] = "AI量化投资日报"
@@ -111,16 +109,16 @@ def send_mail(content):
 def main():
     today = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
 
-    # 抓取各模块数据
+    # 1. 抓取各模块数据
     north = northbound_funds()
     lhb = longhubang()
     us_tech = us_tech_stocks()
 
-    # 板块轮动示例
+    # 2. 板块轮动示例
     sectors = ["新能源", "半导体", "医药", "光伏"]
     sector_info = [f"{i+1}. {s} 板块今日表现优异" for i, s in enumerate(sectors)]
 
-    # 数据文本整理
+    # 3. 数据文本整理（条目化，便于 AI 分析）
     data_text = "\n".join(
         ["===== 北向资金 ====="] + north +
         ["\n===== 龙虎榜 ====="] + lhb +
@@ -128,10 +126,10 @@ def main():
         ["\n===== 板块轮动 ====="] + sector_info
     )
 
-    # AI生成策略报告
+    # 4. AI生成策略报告
     report = ai_report(data_text)
 
-    # 终极日报
+    # 5. 终极日报
     final = f"""
 AI量化投资终极日报
 时间: {today}
