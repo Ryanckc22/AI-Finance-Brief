@@ -80,8 +80,8 @@ A股
 
 def send_email(content):
 
-    sender = os.getenv("25041156@qq.com")
-    password = os.getenv("impkhcgtvtxacbdb")
+    sender = os.getenv("EMAIL_USER")
+    password = os.getenv("EMAIL_PASS")
     receiver = sender
 
     msg = MIMEText(content)
