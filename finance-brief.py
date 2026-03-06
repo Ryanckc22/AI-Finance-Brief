@@ -8,10 +8,6 @@ import yfinance as yf  # 美股数据
 
 # ===== 1️⃣ 北向资金监控 =====
 def northbound_funds():
-    """
-    抓取东方财富北向资金数据（沪股通/深股通）
-    返回前10个净买入个股
-    """
     url = "http://push2.eastmoney.com/api/qt/kamt/north?fields=f12,f14,f2,f3"
     try:
         r = requests.get(url, timeout=5)
@@ -29,9 +25,6 @@ def northbound_funds():
 
 # ===== 2️⃣ 龙虎榜监控 =====
 def longhubang():
-    """
-    东方财富龙虎榜简化版
-    """
     url = "http://push2.eastmoney.com/api/qt/stock/getsuspension?fields=f12,f14,f2,f3"
     try:
         r = requests.get(url, timeout=5)
@@ -109,16 +102,13 @@ def send_mail(content):
 def main():
     today = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
 
-    # 1. 抓取各模块数据
     north = northbound_funds()
     lhb = longhubang()
     us_tech = us_tech_stocks()
 
-    # 2. 板块轮动示例
     sectors = ["新能源", "半导体", "医药", "光伏"]
     sector_info = [f"{i+1}. {s} 板块今日表现优异" for i, s in enumerate(sectors)]
 
-    # 3. 数据文本整理（条目化，便于 AI 分析）
     data_text = "\n".join(
         ["===== 北向资金 ====="] + north +
         ["\n===== 龙虎榜 ====="] + lhb +
@@ -126,10 +116,8 @@ def main():
         ["\n===== 板块轮动 ====="] + sector_info
     )
 
-    # 4. AI生成策略报告
     report = ai_report(data_text)
 
-    # 5. 终极日报
     final = f"""
 AI量化投资终极日报
 时间: {today}
