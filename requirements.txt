@@ -1,4 +1,16 @@
-requests
-beautifulsoup4
-pandas
-openai
+# HTTP 请求
+requests>=2.30.0
+
+# 美股数据抓取
+yfinance>=0.2.26
+pandas>=2.1.0
+
+# HTML 解析（备用，用于网页抓取新闻）
+beautifulsoup4>=4.12.2
+lxml>=4.9.3
+
+# OpenAI API
+openai>=1.0.0
+
+# 邮件发送依赖（Python 内置，不需安装）
+# smtplib, email 已内置
