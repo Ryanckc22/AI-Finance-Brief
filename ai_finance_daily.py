@@ -5,7 +5,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 import os
 import yfinance as yf
-from openai import OpenAI
+import google.generativeai as genai
 
 # ===== 北向资金监控 =====
 def northbound_funds():
@@ -19,23 +19,20 @@ def northbound_funds():
     try:
         r = requests.get(url, headers=headers, timeout=8)
         data = r.json()
-        # 解析沪深港通南北向汇总数据
         north = data.get("data", {}).get("s2n", [])
         if not north:
             raise ValueError("返回数据为空")
-        # 取最新一条（最后一个时间节点）
         latest = north[-1].split(",")
         time_str = latest[0]
-        sh_net = float(latest[1]) / 10000  # 万 -> 亿
+        sh_net = float(latest[1]) / 10000
         sz_net = float(latest[3]) / 10000
         total = sh_net + sz_net
-        result = [
+        return [
             f"统计时间: {time_str}",
             f"沪股通净买入: {sh_net:.2f} 亿元",
             f"深股通净买入: {sz_net:.2f} 亿元",
             f"北向资金合计净买入: {total:.2f} 亿元",
         ]
-        return result
     except Exception as e:
         return [f"北向资金数据抓取失败: {e}"]
 
@@ -43,12 +40,11 @@ def northbound_funds():
 # ===== 龙虎榜监控 =====
 def longhubang():
     """抓取龙虎榜数据（东方财富）"""
-    today = datetime.datetime.now().strftime("%Y-%m-%d")
     url = (
-        f"http://push2.eastmoney.com/api/qt/stock/lhbdata/get"
-        f"?fields=f12,f14,f2,f3,f62,f184"
-        f"&fltt=2&invt=2&fid=f184&fs=m:90+t:2&pn=1&pz=10"
-        f"&ut=b2884a393a59ad64002292a3e90d46a5"
+        "http://push2.eastmoney.com/api/qt/stock/lhbdata/get"
+        "?fields=f12,f14,f2,f3,f62,f184"
+        "&fltt=2&invt=2&fid=f184&fs=m:90+t:2&pn=1&pz=10"
+        "&ut=b2884a393a59ad64002292a3e90d46a5"
     )
     headers = {"Referer": "https://data.eastmoney.com/"}
     try:
@@ -131,18 +127,21 @@ def sector_etf():
     return result
 
 
-# ===== AI策略报告生成 =====
+# ===== AI策略报告生成（Gemini） =====
 def ai_report(data_text: str) -> str:
-    """调用 OpenAI GPT 生成投资策略报告"""
-    client = OpenAI(api_key=os.environ["OPENAI_API_KEY"])
+    """调用 Google Gemini 生成投资策略报告"""
+    genai.configure(api_key=os.environ["GEMINI_API_KEY"])
 
-    system_msg = (
-        "你是资深券商策略首席分析师。"
-        "你的报告必须100%基于用户提供的真实数据，"
-        "禁止出现任何模板化描述或无数据支撑的结论。"
+    model = genai.GenerativeModel(
+        model_name="gemini-1.5-flash",  # 免费额度最大的模型
+        system_instruction=(
+            "你是资深券商策略首席分析师。"
+            "你的报告必须100%基于用户提供的真实数据，"
+            "禁止出现任何模板化描述或无数据支撑的结论。"
+        ),
     )
 
-    user_msg = f"""
+    prompt = f"""
 请根据以下今日市场真实数据，生成一份专业投资策略报告：
 
 {data_text}
@@ -157,16 +156,8 @@ def ai_report(data_text: str) -> str:
 7. 报告长度约600-800字，适合直接邮件阅读。
 """
 
-    response = client.chat.completions.create(
-        model="gpt-3.5-turbo",
-        messages=[
-            {"role": "system", "content": system_msg},
-            {"role": "user", "content": user_msg},
-        ],
-        temperature=0.3,
-        max_tokens=1500,
-    )
-    return response.choices[0].message.content
+    response = model.generate_content(prompt)
+    return response.text
 
 
 # ===== 邮件发送 =====
@@ -174,14 +165,12 @@ def send_mail(subject: str, content: str):
     """通过 QQ 邮箱 SMTP 发送邮件"""
     sender = os.environ["EMAIL_USER"]
     password = os.environ["EMAIL_PASS"]
-    receiver = sender  # 发给自己，可改为其他地址
+    receiver = sender
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject
     msg["From"] = sender
     msg["To"] = receiver
-
-    # 纯文本正文
     msg.attach(MIMEText(content, "plain", "utf-8"))
 
     try:
@@ -211,7 +200,6 @@ def main():
     sectors = sector_etf()
     print("板块ETF ✓")
 
-    # 拼接数据摘要
     data_text = "\n".join(
         ["===== 北向资金 ====="] + north
         + ["\n===== 龙虎榜 TOP8 ====="] + lhb
@@ -219,7 +207,7 @@ def main():
         + ["\n===== A股板块ETF ====="] + sectors
     )
 
-    print("正在生成AI报告...")
+    print("正在生成 Gemini AI 报告...")
     report = ai_report(data_text)
 
     final = f"""AI量化投资日报
@@ -235,7 +223,7 @@ def main():
 {report}
 
 {'='*50}
-本报告由 AI 基于实时数据自动生成，不构成投资建议。
+本报告由 Gemini AI 基于实时数据自动生成，不构成投资建议。
 """
 
     subject = f"AI量化投资日报 {datetime.datetime.now().strftime('%Y-%m-%d')}"
