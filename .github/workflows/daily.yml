@@ -8,28 +8,21 @@ on:
 jobs:
   run-daily-report:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-
       - name: Install dependencies
-        run: |
-          pip install requests yfinance
-
-      - name: Run AI Finance Daily Script
+        run: pip install requests yfinance
+      - name: Run
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           EMAIL_USER: ${{ secrets.EMAIL_USER }}
           EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
         run: |
           python - << 'PYEOF'
-          import requests, datetime, smtplib, json, re, os
+          import requests, datetime, smtplib, json, re, os, time
           from email.mime.text import MIMEText
           from email.mime.multipart import MIMEMultipart
           import yfinance as yf
@@ -38,9 +31,8 @@ jobs:
               print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {tag}: {msg}")
 
           def northbound_funds():
-              # 东方财富接口为国内服务器，GitHub Actions（美国）无法访问，直接跳过
               log("北向资金", "境外服务器无法访问国内接口，跳过")
-              return ["北向资金：GitHub Actions服务器在境外，无法访问国内接口，数据不可用"]
+              return ["北向资金：服务器在境外，无法访问国内接口"]
 
           def us_tech_stocks():
               symbols = {"NVDA":"英伟达","MSFT":"微软","TSLA":"特斯拉","AAPL":"苹果","META":"Meta","GOOGL":"谷歌"}
@@ -53,7 +45,7 @@ jobs:
                           continue
                       prev, last = hist["Close"].iloc[-2], hist["Close"].iloc[-1]
                       d = hist.index[-1].strftime("%m-%d")
-                      chg = last-prev
+                      chg = last - prev
                       result.append(f"{i}. {name}({s})[{d}]: ${last:.2f} {chg:+.2f}({chg/prev*100:+.2f}%)")
                   except Exception as e:
                       result.append(f"{i}. {name}({s}) 失败: {e}")
@@ -79,18 +71,19 @@ jobs:
               return result
 
           def ai_report(data_text):
-              import time
               api_key = os.environ["GEMINI_API_KEY"]
-              # auto-detect model
               try:
                   r0 = requests.get(f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}", timeout=10)
                   models = r0.json().get("models", [])
-                  usable = [m["name"].split("/")[1] for m in models if "generateContent" in m.get("supportedGenerationMethods", []) and "flash" in m["name"]]
+                  usable = [m["name"].split("/")[1] for m in models
+                            if "generateContent" in m.get("supportedGenerationMethods", [])
+                            and "flash" in m["name"]]
                   model_name = usable[0] if usable else "gemini-2.0-flash"
                   log("Gemini", f"使用模型: {model_name}")
               except Exception as e:
                   model_name = "gemini-2.0-flash"
                   log("Gemini", f"模型查询失败: {e}")
+
               url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
               system_instruction = ("你是资深券商策略首席分析师。报告必须100%基于提供的真实数据。"
                                     "若数据标注失败则跳过，禁止模板化描述。")
@@ -99,10 +92,9 @@ jobs:
           {data_text}
 
           【一、全球市场】分析美股各科技股涨跌幅，引用具体数值判断情绪。
-          【二、A股资金面】分析北向资金，若显示±520/±1040整数则注明"数据暂未更新"。
-          【三、龙虎榜】有数据则点评前3名；失败则跳过。
-          【四、板块轮动】对比ETF涨跌，指出最强最弱板块和逻辑。
-          【五、明日策略】给出操作方向，必须有数据支撑，约600字。"""
+          【二、A股资金面】北向资金数据不可用，跳过。
+          【三、板块轮动】对比ETF涨跌，指出最强最弱板块和逻辑。
+          【四、明日策略】给出操作方向，必须有数据支撑，约600字。"""
               payload = {
                   "system_instruction": {"parts": [{"text": system_instruction}]},
                   "contents": [{"parts": [{"text": prompt}]}],
@@ -112,51 +104,65 @@ jobs:
                   r = requests.post(url, json=payload, timeout=60)
                   if r.status_code == 429:
                       wait = 30 * (attempt + 1)
-                      log("Gemini", f"429限速，等待{wait}秒后重试（第{attempt+1}次）")
+                      log("Gemini", f"429限速，等待{wait}秒重试")
                       time.sleep(wait)
                       continue
                   r.raise_for_status()
                   text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
                   log("Gemini", "报告生成成功")
                   return text
-              raise Exception("Gemini API 重试3次后仍然失败")
+              raise Exception("Gemini重试3次失败")
 
-          def send_mail(subject, plain_content):
+          def to_html(data_text, report):
+              # 数据行转HTML
+              rows = ""
+              for line in data_text.split("\n"):
+                  line = line.strip()
+                  if not line:
+                      continue
+                  if line.startswith("====="):
+                      section = line.replace("=","").strip()
+                      rows += f"<h3 style='color:#c0392b;margin:16px 0 6px;font-size:15px;'>{section}</h3>"
+                  else:
+                      rows += f"<p style='margin:3px 0;font-size:14px;color:#333;'>{line}</p>"
+              # 报告转HTML，处理**加粗**
+              rhtml = report.replace("\n\n","</p><p style='margin:10px 0;'>").replace("\n","<br>")
+              rhtml = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", rhtml)
+              rhtml = f"<p style='margin:10px 0;'>{rhtml}</p>"
+              return f"""<!DOCTYPE html>
+          <html>
+          <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width,initial-scale=1.0">
+          </head>
+          <body style="font-family:-apple-system,BlinkMacSystemFont,sans-serif;max-width:600px;margin:0 auto;padding:16px;background:#f5f5f5;">
+          <div style="background:#fff;border-radius:12px;padding:20px;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
+            <h1 style="font-size:20px;color:#1a1a1a;border-bottom:3px solid #c0392b;padding-bottom:10px;margin-top:0;">
+              📊 AI量化投资日报
+            </h1>
+            <div style="background:#fafafa;border-radius:8px;padding:12px;margin-bottom:16px;">
+              {rows}
+            </div>
+            <h2 style="font-size:17px;color:#c0392b;margin-bottom:12px;">📝 AI策略报告</h2>
+            <div style="line-height:1.8;color:#222;font-size:15px;">
+              {rhtml}
+            </div>
+            <div style="font-size:12px;color:#999;border-top:1px solid #eee;margin-top:20px;padding-top:10px;">
+              本报告由AI基于实时数据自动生成，不构成投资建议。
+            </div>
+          </div>
+          </body></html>"""
+
+          def send_mail(subject, data_text, report):
               sender = os.environ["EMAIL_USER"]
               password = os.environ["EMAIL_PASS"]
               msg = MIMEMultipart("alternative")
               msg["Subject"] = subject
               msg["From"] = sender
               msg["To"] = sender
-              msg.attach(MIMEText(plain_content, "plain", "utf-8"))
-              # 解析纯文本，转换为手机友好的HTML
-              sections = plain_content.split("========================================")
-              data_part = sections[1].strip() if len(sections) > 1 else ""
-              report_part = sections[2].strip() if len(sections) > 2 else ""
-              # 把数据部分每行转成段落
-              data_html = "".join(f"<p style='margin:4px 0;'>{line}</p>" for line in data_part.split("\n") if line.strip())
-              # 把报告部分处理markdown加粗
-              import re as _re
-              report_html = report_part.replace("\n\n", "</p><p>").replace("\n", "<br>")
-              report_html = _re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", report_html)
-              report_html = f"<p>{report_html}</p>"
-              html = f"""<!DOCTYPE html>
-<html><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<style>
-  body{{font-family:-apple-system,sans-serif;font-size:15px;line-height:1.7;color:#222;max-width:600px;margin:0 auto;padding:16px;}}
-  h1{{font-size:20px;color:#1a1a1a;border-bottom:2px solid #e63946;padding-bottom:8px;}}
-  h2{{font-size:16px;color:#e63946;margin-top:20px;margin-bottom:8px;}}
-  .data-box{{background:#f8f9fa;border-radius:8px;padding:12px;margin:12px 0;font-size:14px;}}
-  .report{{background:#fff;padding:4px 0;}}
-  .footer{{font-size:12px;color:#999;border-top:1px solid #eee;margin-top:20px;padding-top:10px;}}
-</style></head><body>
-<h1>📊 AI量化投资日报</h1>
-<div class="data-box">{data_html}</div>
-<div class="report">{report_html}</div>
-<div class="footer">本报告由AI基于实时数据自动生成，不构成投资建议。</div>
-</body></html>"""
-              msg.attach(MIMEText(html, "html", "utf-8"))
+              plain = f"{data_text}\n\n{report}"
+              msg.attach(MIMEText(plain, "plain", "utf-8"))
+              msg.attach(MIMEText(to_html(data_text, report), "html", "utf-8"))
               with smtplib.SMTP_SSL("smtp.qq.com", 465) as s:
                   s.login(sender, password)
                   s.sendmail(sender, sender, msg.as_string())
@@ -174,8 +180,8 @@ jobs:
                   ["\n===== A股板块ETF ====="]+sectors)
               log("数据", f"\n{data_text}")
               report = ai_report(data_text)
-              final = f"AI量化投资日报\n时间:{now}\n{'='*40}\n{data_text}\n{'='*40}\n{report}\n{'='*40}\n本报告由AI基于实时数据生成，不构成投资建议。"
-              send_mail(f"AI量化投资日报 {now[:10]}", final)
+              subject = f"AI量化投资日报 {now[:10]}"
+              send_mail(subject, data_text, report)
 
           main()
           PYEOF
