@@ -38,36 +38,9 @@ jobs:
               print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {tag}: {msg}")
 
           def northbound_funds():
-              url = ("http://push2.eastmoney.com/api/qt/kamt.rtmin/get"
-                     "?fields1=f1,f2,f3,f4&fields2=f51,f52,f53,f54,f55,f56"
-                     "&ut=b2884a393a59ad64002292a3e90d46a5"
-                     "&cb=jQuery18304048470484873345_1698890000000&_=1698890000001")
-              headers = {"Referer": "https://data.eastmoney.com/hsgtcg/",
-                         "User-Agent": "Mozilla/5.0"}
-              try:
-                  r = requests.get(url, headers=headers, timeout=10)
-                  text = r.text
-                  match = re.search(r"jQuery[\w_]+\((\{.*\})\)", text, re.DOTALL)
-                  if not match:
-                      raise ValueError(f"JSONP解析失败: {text[:100]}")
-                  data = json.loads(match.group(1))
-                  north_list = data.get("data", {}).get("s2n", [])
-                  if not north_list:
-                      raise ValueError("s2n为空")
-                  latest = north_list[-1].split(",")
-                  sh_buy, sh_sell = float(latest[1])/10000, float(latest[2])/10000
-                  sz_buy, sz_sell = float(latest[3])/10000, float(latest[4])/10000
-                  sh_net, sz_net = sh_buy-sh_sell, sz_buy-sz_sell
-                  total = sh_net + sz_net
-                  result = [f"统计时间: {latest[0]}",
-                            f"沪股通净买入: {sh_net:+.2f}亿（买入{sh_buy:.2f}/卖出{sh_sell:.2f}）",
-                            f"深股通净买入: {sz_net:+.2f}亿（买入{sz_buy:.2f}/卖出{sz_sell:.2f}）",
-                            f"北向合计净买入: {total:+.2f}亿"]
-                  log("北向资金", f"成功 {total:+.2f}亿")
-                  return result
-              except Exception as e:
-                  log("北向资金", f"失败: {e}")
-                  return [f"北向资金抓取失败: {e}"]
+              # 东方财富接口为国内服务器，GitHub Actions（美国）无法访问，直接跳过
+              log("北向资金", "境外服务器无法访问国内接口，跳过")
+              return ["北向资金：GitHub Actions服务器在境外，无法访问国内接口，数据不可用"]
 
           def us_tech_stocks():
               symbols = {"NVDA":"英伟达","MSFT":"微软","TSLA":"特斯拉","AAPL":"苹果","META":"Meta","GOOGL":"谷歌"}
@@ -133,7 +106,7 @@ jobs:
               payload = {
                   "system_instruction": {"parts": [{"text": system_instruction}]},
                   "contents": [{"parts": [{"text": prompt}]}],
-                  "generationConfig": {"temperature": 0.3, "maxOutputTokens": 1500}
+                  "generationConfig": {"temperature": 0.3, "maxOutputTokens": 3000}
               }
               for attempt in range(3):
                   r = requests.post(url, json=payload, timeout=60)
