@@ -108,7 +108,17 @@ jobs:
           def ai_report(data_text):
               import time
               api_key = os.environ["GEMINI_API_KEY"]
-              url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite-preview-06-17:generateContent?key={api_key}"
+              # auto-detect model
+              try:
+                  r0 = requests.get(f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}", timeout=10)
+                  models = r0.json().get("models", [])
+                  usable = [m["name"].split("/")[1] for m in models if "generateContent" in m.get("supportedGenerationMethods", []) and "flash" in m["name"]]
+                  model_name = usable[0] if usable else "gemini-2.0-flash"
+                  log("Gemini", f"使用模型: {model_name}")
+              except Exception as e:
+                  model_name = "gemini-2.0-flash"
+                  log("Gemini", f"模型查询失败: {e}")
+              url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
               system_instruction = ("你是资深券商策略首席分析师。报告必须100%基于提供的真实数据。"
                                     "若数据标注失败则跳过，禁止模板化描述。")
               prompt = f"""以下是今日市场数据，请生成专业投资策略报告：
