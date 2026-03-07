@@ -20,6 +20,7 @@ jobs:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           EMAIL_USER: ${{ secrets.EMAIL_USER }}
           EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
+          NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
         run: |
           python - << 'PYEOF'
           import requests, datetime, smtplib, json, re, os, time
@@ -110,6 +111,73 @@ jobs:
                       result.append(f"{i:2}. {sector}({code})[{d}]: {last:.3f}  {arrow}{abs(pct):.2f}%")
               log("板块ETF", f"获取{len([r for r in rows if r[2] is not None])}条")
               return result, rows  # 返回rows供强势股使用
+
+          # 板块新闻关键词映射
+          SECTOR_KEYWORDS = {
+              "512480.SS": "半导体 芯片",
+              "515070.SS": "人工智能 AI",
+              "562500.SS": "机器人 人形机器人",
+              "512720.SS": "计算机 软件",
+              "515050.SS": "5G 通信",
+              "516160.SS": "卫星 商业航天",
+              "512400.SS": "有色金属 铜 铝",
+              "159697.SZ": "石油 油气",
+              "516020.SS": "化工",
+              "515210.SS": "钢铁",
+              "515220.SS": "煤炭",
+              "516780.SS": "稀土",
+              "159611.SZ": "电网 电力设备",
+              "516950.SS": "工程机械",
+              "512660.SS": "军工 国防",
+              "515790.SS": "光伏 太阳能",
+              "515030.SS": "新能源车 电动车",
+              "512880.SS": "证券 股市",
+              "512800.SS": "银行",
+              "510880.SS": "红利 分红",
+              "510720.SS": "央企 国企",
+              "510300.SS": "沪深300",
+              "510500.SS": "中证500",
+              "512100.SS": "中证1000",
+              "588000.SS": "科创板",
+              "159949.SZ": "创业板",
+              "159915.SZ": "新能源",
+              "159929.SZ": "医药 生物",
+              "159928.SZ": "消费 白酒",
+              "510230.SS": "金融",
+          }
+
+          # ===== 4b. NewsAPI 板块新闻 =====
+          def fetch_sector_news(sector_code, sector_name):
+              api_key = os.environ.get("NEWS_API_KEY", "")
+              if not api_key:
+                  return []
+              keyword = SECTOR_KEYWORDS.get(sector_code, sector_name)
+              try:
+                  url = (f"https://newsapi.org/v2/everything"
+                         f"?q={requests.utils.quote(keyword)}"
+                         f"&language=zh"
+                         f"&sortBy=publishedAt"
+                         f"&pageSize=3"
+                         f"&apiKey={api_key}")
+                  r = requests.get(url, timeout=8)
+                  articles = r.json().get("articles", [])
+                  result = []
+                  for a in articles[:3]:
+                      title = a.get("title","").split(" - ")[0].strip()
+                      pub   = a.get("publishedAt","")[:16].replace("T"," ")
+                      # 转北京时间（UTC+8）
+                      try:
+                          import datetime as _dt
+                          dt = _dt.datetime.strptime(pub, "%Y-%m-%d %H:%M")
+                          dt_bj = dt + _dt.timedelta(hours=8)
+                          pub = dt_bj.strftime("%m/%d %H:%M")
+                      except:
+                          pass
+                      if title:
+                          result.append(f"  📰 [{pub}] {title}")
+                  return result
+              except:
+                  return []
 
           # ===== 4. 强势股筛选（各强势板块前10大重仓股）=====
           def strong_stocks(etf_rows):
@@ -242,6 +310,11 @@ jobs:
                           arrow = "▲" if pct > 0 else "▼"
                           vol_tag = f" 量比{vol_ratio:.1f}x" if vol_ratio > 1.5 else ""
                           result.append(f"  {name}({scode}): {last:.2f}  {arrow}{abs(pct):.2f}%{vol_tag}")
+                      # 板块相关新闻（NewsAPI）
+                      sector_news = fetch_sector_news(code, sector_name)
+                      if sector_news:
+                          result.append(f"  ─ {sector_name}相关新闻 ─")
+                          result.extend(sector_news)
 
               if not result:
                   return ["强势股数据获取中..."]
