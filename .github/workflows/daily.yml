@@ -181,12 +181,12 @@ jobs:
                       except:
                           continue
                   strong.sort(key=lambda x: x[3], reverse=True)
-                  for name, scode, last, pct, vol_ratio in strong[:3]:
-                      arrow = "▲" if pct > 0 else "▼"
-                      vol_tag = f" 量比{vol_ratio:.1f}x" if vol_ratio > 1.5 else ""
-                      result.append(f"  {name}({scode}): {last:.2f}  {arrow}{abs(pct):.2f}%{vol_tag}")
                   if strong:
-                      result.insert(len(result)-min(3,len(strong)), f"【{sector_name}强势股】")
+                      result.append(f"【{sector_name}强势股】")  # 先加标题
+                      for name, scode, last, pct, vol_ratio in strong[:3]:  # 再加股票
+                          arrow = "▲" if pct > 0 else "▼"
+                          vol_tag = f" 量比{vol_ratio:.1f}x" if vol_ratio > 1.5 else ""
+                          result.append(f"  {name}({scode}): {last:.2f}  {arrow}{abs(pct):.2f}%{vol_tag}")
 
               if not result:
                   return ["强势股数据获取中..."]
