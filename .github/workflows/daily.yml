@@ -2,7 +2,7 @@ name: AI Finance Daily
 
 on:
   schedule:
-    - cron: '30 0,14 * * *'
+    - cron: '30 0,4,14 * * *'   # 北京时间 08:30 / 12:30 / 22:30
   workflow_dispatch:
 
 jobs:
@@ -53,21 +53,65 @@ jobs:
               return result
 
           def sector_etf():
-              etfs = {"新能源":"159915.SZ","半导体":"512480.SS","医药":"159929.SZ",
-                      "消费":"159928.SZ","金融":"510230.SS","军工":"512660.SS"}
-              result = []
-              for i,(sector,code) in enumerate(etfs.items(),1):
+              # ETF代码：(板块名, 代码)
+              etfs = [
+                  ("芯片/半导体",    "512480.SS"),
+                  ("人工智能(AI)",   "515070.SS"),
+                  ("机器人",         "562500.SS"),
+                  ("计算机",         "512720.SS"),
+                  ("5G/通信",        "515050.SS"),
+                  ("卫星/商业航天",  "516160.SS"),
+                  ("有色金属",       "512400.SS"),
+                  ("油气/石油",      "159697.SZ"),
+                  ("化工",           "516020.SS"),
+                  ("钢铁",           "515210.SS"),
+                  ("煤炭",           "515220.SS"),
+                  ("稀土/稀有金属",  "516780.SS"),
+                  ("电网设备",       "159611.SZ"),
+                  ("工程机械",       "516950.SS"),
+                  ("国防军工",       "512660.SS"),
+                  ("光伏",           "515790.SS"),
+                  ("新能源车",       "515030.SS"),
+                  ("证券",           "512880.SS"),
+                  ("银行",           "512800.SS"),
+                  ("红利",           "510880.SS"),
+                  ("央国企",         "510720.SS"),
+                  ("沪深300",        "510300.SS"),
+                  ("中证500",        "510500.SS"),
+                  ("中证1000",       "512100.SS"),
+                  ("科创50",         "588000.SS"),
+                  ("创业板50",       "159949.SZ"),
+                  ("新能源(宽基)",   "159915.SZ"),
+                  ("医药生物",       "159929.SZ"),
+                  ("消费",           "159928.SZ"),
+                  ("金融",           "510230.SS"),
+              ]
+              rows = []
+              for sector, code in etfs:
                   try:
                       hist = yf.Ticker(code).history(period="5d").dropna(subset=["Close"])
                       if len(hist) < 2:
-                          result.append(f"{i}. {sector}ETF: 暂无数据")
+                          rows.append((sector, code, None, None, None))
                           continue
                       prev, last = hist["Close"].iloc[-2], hist["Close"].iloc[-1]
                       d = hist.index[-1].strftime("%m-%d")
-                      result.append(f"{i}. {sector}ETF({code})[{d}]: {last:.3f} ({(last-prev)/prev*100:+.2f}%)")
+                      pct = (last - prev) / prev * 100
+                      rows.append((sector, code, last, pct, d))
                   except Exception as e:
-                      result.append(f"{i}. {sector}ETF失败: {e}")
-              log("板块ETF", f"获取{len([r for r in result if '失败' not in r and '暂无' not in r])}条")
+                      rows.append((sector, code, None, None, None))
+
+              # 按涨跌幅降序排序，无数据的排最后
+              rows.sort(key=lambda x: x[3] if x[3] is not None else -999, reverse=True)
+
+              result = []
+              for i, (sector, code, last, pct, d) in enumerate(rows, 1):
+                  if last is None:
+                      result.append(f"{i:2}. {sector}({code}): 暂无数据")
+                  else:
+                      arrow = "▲" if pct > 0 else ("▼" if pct < 0 else "—")
+                      result.append(f"{i:2}. {sector}({code})[{d}]: {last:.3f}  {arrow}{pct:+.2f}%")
+
+              log("板块ETF", f"获取{len([r for r in rows if r[2] is not None])}条，已按涨跌幅排序")
               return result
 
           def ai_report(data_text):
@@ -85,16 +129,19 @@ jobs:
                   log("Gemini", f"模型查询失败: {e}")
 
               url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
-              system_instruction = ("你是资深券商策略首席分析师。报告必须100%基于提供的真实数据。"
-                                    "若数据标注失败则跳过，禁止模板化描述。")
+              system_instruction = ("你是资深券商策略首席分析师。报告必须100%基于提供的真实数据和具体数值。"
+                                    "若数据标注失败或暂无则跳过，禁止任何模板化描述。")
               prompt = f"""以下是今日市场数据，请生成专业投资策略报告：
 
           {data_text}
 
-          【一、全球市场】分析美股各科技股涨跌幅，引用具体数值判断情绪。
-          【二、A股资金面】北向资金数据不可用，跳过。
-          【三、板块轮动】对比ETF涨跌，指出最强最弱板块和逻辑。
-          【四、明日策略】给出操作方向，必须有数据支撑，约600字。"""
+          报告结构：
+          【一、全球市场】分析美股各科技股涨跌，引用具体股价和幅度，判断整体情绪。
+          【二、A股板块轮动】重点分析涨幅前5和跌幅前5的板块，说明资金流向逻辑，点名具体板块和涨跌幅数值。
+          【三、主题机会】结合涨幅靠前的板块，分析背后的产业逻辑或政策驱动。
+          【四、风险提示】结合跌幅较大的板块，提示需要规避的方向。
+          【五、明日策略】基于以上数据，给出明日重点关注的板块和操作思路，必须有数据支撑。
+          要求：约800字，每句结论必须对应上方具体数据，禁止无数据支撑的描述。"""
               payload = {
                   "system_instruction": {"parts": [{"text": system_instruction}]},
                   "contents": [{"parts": [{"text": prompt}]}],
@@ -114,7 +161,6 @@ jobs:
               raise Exception("Gemini重试3次失败")
 
           def to_html(data_text, report):
-              # 数据行转HTML
               rows = ""
               for line in data_text.split("\n"):
                   line = line.strip()
@@ -122,36 +168,37 @@ jobs:
                       continue
                   if line.startswith("====="):
                       section = line.replace("=","").strip()
-                      rows += f"<h3 style='color:#c0392b;margin:16px 0 6px;font-size:15px;'>{section}</h3>"
+                      rows += f"<h3 style='color:#c0392b;margin:16px 0 6px;font-size:15px;border-left:3px solid #c0392b;padding-left:8px;'>{section}</h3>"
                   else:
-                      rows += f"<p style='margin:3px 0;font-size:14px;color:#333;'>{line}</p>"
-              # 报告转HTML，处理**加粗**
+                      # 涨跌幅上色
+                      color = "#c0392b" if "▲" in line else ("#27ae60" if "▼" in line else "#333")
+                      rows += f"<p style='margin:3px 0;font-size:14px;color:{color};font-family:monospace;'>{line}</p>"
               rhtml = report.replace("\n\n","</p><p style='margin:10px 0;'>").replace("\n","<br>")
               rhtml = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", rhtml)
               rhtml = f"<p style='margin:10px 0;'>{rhtml}</p>"
-              return f"""<!DOCTYPE html>
-          <html>
-          <head>
-          <meta charset="utf-8">
-          <meta name="viewport" content="width=device-width,initial-scale=1.0">
-          </head>
-          <body style="font-family:-apple-system,BlinkMacSystemFont,sans-serif;max-width:600px;margin:0 auto;padding:16px;background:#f5f5f5;">
-          <div style="background:#fff;border-radius:12px;padding:20px;box-shadow:0 2px 8px rgba(0,0,0,0.08);">
-            <h1 style="font-size:20px;color:#1a1a1a;border-bottom:3px solid #c0392b;padding-bottom:10px;margin-top:0;">
-              📊 AI量化投资日报
-            </h1>
-            <div style="background:#fafafa;border-radius:8px;padding:12px;margin-bottom:16px;">
-              {rows}
-            </div>
-            <h2 style="font-size:17px;color:#c0392b;margin-bottom:12px;">📝 AI策略报告</h2>
-            <div style="line-height:1.8;color:#222;font-size:15px;">
-              {rhtml}
-            </div>
-            <div style="font-size:12px;color:#999;border-top:1px solid #eee;margin-top:20px;padding-top:10px;">
-              本报告由AI基于实时数据自动生成，不构成投资建议。
-            </div>
-          </div>
-          </body></html>"""
+              return (
+                  "<!DOCTYPE html><html><head>"
+                  "<meta charset='utf-8'>"
+                  "<meta name='viewport' content='width=device-width,initial-scale=1.0'>"
+                  "</head>"
+                  "<body style='font-family:-apple-system,BlinkMacSystemFont,sans-serif;"
+                  "max-width:620px;margin:0 auto;padding:16px;background:#f5f5f5;'>"
+                  "<div style='background:#fff;border-radius:12px;padding:20px;"
+                  "box-shadow:0 2px 8px rgba(0,0,0,0.08);'>"
+                  "<h1 style='font-size:20px;color:#1a1a1a;border-bottom:3px solid #c0392b;"
+                  "padding-bottom:10px;margin-top:0;'>📊 AI量化投资日报</h1>"
+                  "<div style='background:#fafafa;border-radius:8px;padding:12px;margin-bottom:16px;'>"
+                  f"{rows}"
+                  "</div>"
+                  "<h2 style='font-size:17px;color:#c0392b;margin-bottom:12px;'>📝 AI策略报告</h2>"
+                  "<div style='line-height:1.8;color:#222;font-size:15px;'>"
+                  f"{rhtml}"
+                  "</div>"
+                  "<div style='font-size:12px;color:#999;border-top:1px solid #eee;"
+                  "margin-top:20px;padding-top:10px;'>"
+                  "本报告由AI基于实时数据自动生成，不构成投资建议。</div>"
+                  "</div></body></html>"
+              )
 
           def send_mail(subject, data_text, report):
               sender = os.environ["EMAIL_USER"]
@@ -160,8 +207,7 @@ jobs:
               msg["Subject"] = subject
               msg["From"] = sender
               msg["To"] = sender
-              plain = f"{data_text}\n\n{report}"
-              msg.attach(MIMEText(plain, "plain", "utf-8"))
+              msg.attach(MIMEText(f"{data_text}\n\n{report}", "plain", "utf-8"))
               msg.attach(MIMEText(to_html(data_text, report), "html", "utf-8"))
               with smtplib.SMTP_SSL("smtp.qq.com", 465) as s:
                   s.login(sender, password)
@@ -177,7 +223,7 @@ jobs:
               data_text = "\n".join(
                   ["===== 北向资金 ====="]+north+
                   ["\n===== 美股科技股 ====="]+us+
-                  ["\n===== A股板块ETF ====="]+sectors)
+                  ["\n===== A股板块ETF（按涨跌幅排序）====="]+sectors)
               log("数据", f"\n{data_text}")
               report = ai_report(data_text)
               subject = f"AI量化投资日报 {now[:10]}"
