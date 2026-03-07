@@ -106,7 +106,7 @@ jobs:
               payload = {
                   "system_instruction": {"parts": [{"text": system_instruction}]},
                   "contents": [{"parts": [{"text": prompt}]}],
-                  "generationConfig": {"temperature": 0.3, "maxOutputTokens": 3000}
+                  "generationConfig": {"temperature": 0.3, "maxOutputTokens": 8192}
               }
               for attempt in range(3):
                   r = requests.post(url, json=payload, timeout=60)
@@ -128,7 +128,11 @@ jobs:
               msg["Subject"] = subject
               msg["From"] = sender
               msg["To"] = sender
+              # 纯文本版本
               msg.attach(MIMEText(content, "plain", "utf-8"))
+              # HTML版本（排版更好，不会被截断）
+              html_content = "<html><body><pre style='font-family:monospace;font-size:14px;line-height:1.6;'>" + content + "</pre></body></html>"
+              msg.attach(MIMEText(html_content, "html", "utf-8"))
               with smtplib.SMTP_SSL("smtp.qq.com", 465) as s:
                   s.login(sender, password)
                   s.sendmail(sender, sender, msg.as_string())
