@@ -106,6 +106,7 @@ jobs:
               return result
 
           def ai_report(data_text):
+              import time
               api_key = os.environ["GEMINI_API_KEY"]
               url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={api_key}"
               system_instruction = ("你是资深券商策略首席分析师。报告必须100%基于提供的真实数据。"
@@ -124,11 +125,18 @@ jobs:
                   "contents": [{"parts": [{"text": prompt}]}],
                   "generationConfig": {"temperature": 0.3, "maxOutputTokens": 1500}
               }
-              r = requests.post(url, json=payload, timeout=60)
-              r.raise_for_status()
-              text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
-              log("Gemini", "报告生成成功")
-              return text
+              for attempt in range(3):
+                  r = requests.post(url, json=payload, timeout=60)
+                  if r.status_code == 429:
+                      wait = 30 * (attempt + 1)
+                      log("Gemini", f"429限速，等待{wait}秒后重试（第{attempt+1}次）")
+                      time.sleep(wait)
+                      continue
+                  r.raise_for_status()
+                  text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+                  log("Gemini", "报告生成成功")
+                  return text
+              raise Exception("Gemini API 重试3次后仍然失败")
 
           def send_mail(subject, content):
               sender = os.environ["EMAIL_USER"]
