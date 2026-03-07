@@ -156,6 +156,11 @@ jobs:
               valid = [(code, pct) for (_, code, _, pct, _) in etf_rows if pct is not None]
               valid.sort(key=lambda x: x[1], reverse=True)
               top_codes = [code for code, _ in valid[:5]]
+              log("强势股DEBUG", f"涨幅前5板块代码: {top_codes}")
+              log("强势股DEBUG", f"字典收录代码: {list(top_sectors_stocks.keys())}")
+              for code in top_codes:
+                  has = code in top_sectors_stocks
+                  log("强势股DEBUG", f"  {code} -> {'有数据' if has else '无数据！'}")
 
               result = []
               checked = set()
