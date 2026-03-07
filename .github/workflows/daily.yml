@@ -121,18 +121,42 @@ jobs:
                   return text
               raise Exception("Gemini API 重试3次后仍然失败")
 
-          def send_mail(subject, content):
+          def send_mail(subject, plain_content):
               sender = os.environ["EMAIL_USER"]
               password = os.environ["EMAIL_PASS"]
               msg = MIMEMultipart("alternative")
               msg["Subject"] = subject
               msg["From"] = sender
               msg["To"] = sender
-              # 纯文本版本
-              msg.attach(MIMEText(content, "plain", "utf-8"))
-              # HTML版本（排版更好，不会被截断）
-              html_content = "<html><body><pre style='font-family:monospace;font-size:14px;line-height:1.6;'>" + content + "</pre></body></html>"
-              msg.attach(MIMEText(html_content, "html", "utf-8"))
+              msg.attach(MIMEText(plain_content, "plain", "utf-8"))
+              # 解析纯文本，转换为手机友好的HTML
+              sections = plain_content.split("========================================")
+              data_part = sections[1].strip() if len(sections) > 1 else ""
+              report_part = sections[2].strip() if len(sections) > 2 else ""
+              # 把数据部分每行转成段落
+              data_html = "".join(f"<p style='margin:4px 0;'>{line}</p>" for line in data_part.split("\n") if line.strip())
+              # 把报告部分处理markdown加粗
+              import re as _re
+              report_html = report_part.replace("\n\n", "</p><p>").replace("\n", "<br>")
+              report_html = _re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", report_html)
+              report_html = f"<p>{report_html}</p>"
+              html = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+  body{{font-family:-apple-system,sans-serif;font-size:15px;line-height:1.7;color:#222;max-width:600px;margin:0 auto;padding:16px;}}
+  h1{{font-size:20px;color:#1a1a1a;border-bottom:2px solid #e63946;padding-bottom:8px;}}
+  h2{{font-size:16px;color:#e63946;margin-top:20px;margin-bottom:8px;}}
+  .data-box{{background:#f8f9fa;border-radius:8px;padding:12px;margin:12px 0;font-size:14px;}}
+  .report{{background:#fff;padding:4px 0;}}
+  .footer{{font-size:12px;color:#999;border-top:1px solid #eee;margin-top:20px;padding-top:10px;}}
+</style></head><body>
+<h1>📊 AI量化投资日报</h1>
+<div class="data-box">{data_html}</div>
+<div class="report">{report_html}</div>
+<div class="footer">本报告由AI基于实时数据自动生成，不构成投资建议。</div>
+</body></html>"""
+              msg.attach(MIMEText(html, "html", "utf-8"))
               with smtplib.SMTP_SSL("smtp.qq.com", 465) as s:
                   s.login(sender, password)
                   s.sendmail(sender, sender, msg.as_string())
