@@ -246,7 +246,7 @@ jobs:
               if not result:
                   return ["强势股数据获取中..."]
               log("强势股", f"筛选完成，共{len([r for r in result if '【' not in r])}只")
-              return result
+              return result, top_sectors_stocks, top_codes
 
           # ===== 5. 财经新闻（Google News RSS）=====
           def fetch_news():
@@ -522,7 +522,89 @@ jobs:
                           result.append(f"  {name}({scode}): {last:.2f}  {arrow}{abs(pct):.2f}%{vol_tag}")
 
               log("中盘强势股", f"筛选完成")
-              return result if result else ["中盘强势股暂无数据"]
+              return result if result else ["中盘强势股暂无数据"], midcap_stocks
+
+          # ===== 6c. 涨停后高位整理股票筛选 =====
+          def find_limit_up_stocks(top_sectors_stocks, midcap_stocks, etf_rows):
+              # 合并所有股票池（去重）
+              all_stocks = {}
+              valid = [(code, pct) for (_, code, _, pct, _) in etf_rows if pct is not None]
+              valid.sort(key=lambda x: x[1], reverse=True)
+              top_codes = [code for code, _ in valid[:5]]
+              for code in top_codes:
+                  for name, scode in top_sectors_stocks.get(code, []):
+                      all_stocks[scode] = name
+                  for name, scode in midcap_stocks.get(code, []):
+                      all_stocks[scode] = name
+
+              log("涨停筛选", f"扫描股票池共{len(all_stocks)}只")
+              results = []
+              for scode, name in all_stocks.items():
+                  try:
+                      hist = yf.Ticker(scode).history(period="20d").dropna(subset=["Close","Open"])
+                      if len(hist) < 5:
+                          continue
+                      # 只看最近15个交易日
+                      hist = hist.tail(15)
+                      closes = hist["Close"].values
+                      opens  = hist["Open"].values
+                      dates  = hist.index
+
+                      # 找前10个交易日内的涨停（涨幅>=9.8%）
+                      limit_idx = None
+                      for i in range(len(hist) - 2, max(len(hist) - 12, -1), -1):
+                          if i < 1:
+                              continue
+                          pct_chg = (closes[i] - closes[i-1]) / closes[i-1] * 100
+                          if pct_chg >= 9.8:
+                              limit_idx = i
+                              break
+
+                      if limit_idx is None:
+                          continue
+
+                      # 涨停后每天开盘价不低于涨停当日开盘价
+                      limit_open = opens[limit_idx]
+                      hold = True
+                      for j in range(limit_idx + 1, len(hist)):
+                          if opens[j] < limit_open * 0.995:  # 允许0.5%误差
+                              hold = False
+                              break
+
+                      if not hold:
+                          continue
+
+                      # 计算当前涨跌幅和量比
+                      last  = closes[-1]
+                      prev  = closes[-2]
+                      pct   = (last - prev) / prev * 100
+                      vol_hist = yf.Ticker(scode).history(period="15d").dropna(subset=["Volume"])
+                      avg_vol  = vol_hist["Volume"].iloc[:-1].mean() if len(vol_hist) > 1 else 0
+                      cur_vol  = vol_hist["Volume"].iloc[-1] if len(vol_hist) > 0 else 0
+                      vol_ratio = cur_vol / avg_vol if avg_vol > 0 else 1
+
+                      limit_date = dates[limit_idx].strftime("%m/%d")
+                      days_since = len(hist) - 1 - limit_idx
+                      arrow = "▲" if pct > 0 else ("▼" if pct < 0 else "—")
+                      results.append((name, scode, last, pct, vol_ratio, limit_date, days_since))
+
+                  except:
+                      continue
+
+              results.sort(key=lambda x: x[3], reverse=True)
+              output = []
+              if results:
+                  for name, scode, last, pct, vol_ratio, limit_date, days_since in results:
+                      arrow = "▲" if pct > 0 else ("▼" if pct < 0 else "—")
+                      vol_tag = f" 量比{vol_ratio:.1f}x" if vol_ratio >= 1.0 else ""
+                      output.append(
+                          f"  {name}({scode}): {last:.2f}  {arrow}{abs(pct):.2f}%{vol_tag}"
+                          f"  [涨停:{limit_date} {days_since}天前]"
+                      )
+              else:
+                  output = ["暂无符合条件的股票"]
+              log("涨停筛选", f"找到{len(results)}只符合条件的股票")
+              return output
 
           # ===== 7. Gemini AI报告 =====
           def ai_report(data_text):
@@ -656,8 +738,10 @@ jobs:
 
               us      = us_tech_stocks()
               sector_result, etf_rows = sector_etf()
-              strong  = strong_stocks(etf_rows)
-              midcap  = midcap_strong_stocks(etf_rows)
+              strong, top_sectors_stocks, top_codes = strong_stocks(etf_rows)
+              midcap_result, midcap_stocks = midcap_strong_stocks(etf_rows)
+              midcap = midcap_result
+              limit_up = find_limit_up_stocks(top_sectors_stocks, midcap_stocks, etf_rows)
               news    = fetch_news()
               macro   = macro_calendar()
 
@@ -665,6 +749,7 @@ jobs:
                   ["===== A股板块ETF（按涨跌幅排序）====="]+sector_result+
                   ["\n===== 强势股筛选（涨幅前5板块龙头）====="]+strong+
                   ["\n===== 中盘强势股（100-500亿，各板块涨幅前5）====="]+midcap+
+                  ["\n===== 涨停后高位整理（前10日涨停，开盘未破涨停开盘价）====="]+limit_up+
                   ["\n===== 美股科技股 ====="]+us+
                   ["\n===== 今日财经新闻 ====="]+news+
                   ["\n===== 宏观事件日历 ====="]+macro
