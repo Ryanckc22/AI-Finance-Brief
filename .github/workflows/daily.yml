@@ -1,4 +1,4 @@
-name: AI Finance Daily
+name: AI Finance Daily 旧版基础功能
 
 on:
   schedule:
