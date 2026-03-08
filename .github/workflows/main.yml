@@ -27,6 +27,8 @@ jobs:
         run: |
           python - << 'PYEOF'
           import requests, datetime, smtplib, json, re, os, time
+          top_sectors_stocks_global = {}
+          midcap_stocks_global = {}
           from email.mime.text import MIMEText
           from email.mime.multipart import MIMEMultipart
           import yfinance as yf
@@ -318,6 +320,8 @@ jobs:
               if not result:
                   return ["强势股数据获取中..."]
               log("强势股", f"筛选完成，共{len([r for r in result if '【' not in r])}只")
+              global top_sectors_stocks_global
+              top_sectors_stocks_global = top_sectors_stocks
               return result, top_sectors_stocks, top_codes
 
           # ===== 5. 财经新闻（Google News RSS）=====
@@ -594,216 +598,202 @@ jobs:
                           result.append(f"  {name}({scode}): {last:.2f}  {arrow}{abs(pct):.2f}%{vol_tag}")
 
               log("中盘强势股", f"筛选完成")
+              global midcap_stocks_global
+              midcap_stocks_global = midcap_stocks
               return result if result else ["中盘强势股暂无数据"], midcap_stocks
 
-          # ===== 6c. 涨停后高位整理股票筛选 =====
-          def find_limit_up_stocks(top_sectors_stocks, midcap_stocks, etf_rows):
-              # 合并所有股票池（去重）
-              all_stocks = {}
-              valid = [(code, pct) for (_, code, _, pct, _) in etf_rows if pct is not None]
-              valid.sort(key=lambda x: x[1], reverse=True)
-              top_codes = [code for code, _ in valid[:5]]
-              for code in top_codes:
-                  for name, scode in top_sectors_stocks.get(code, []):
-                      all_stocks[scode] = name
-                  for name, scode in midcap_stocks.get(code, []):
-                      all_stocks[scode] = name
+          # ===== 大盘股票池（沪深300+中证500+中证1000，约1500只）=====
+          CSI_POOL = [
+              "600519.SS","601318.SS","600036.SS","300750.SZ","000858.SZ","600900.SS","601166.SS","600276.SS","300760.SZ","002594.SZ",
+              "601688.SS","000333.SZ","600030.SS","601012.SS","600887.SS","002415.SZ","601628.SS","600809.SS","000568.SZ","002304.SZ",
+              "601899.SS","600438.SS","601088.SS","601857.SS","000651.SZ","601398.SS","601288.SS","601939.SS","601998.SS","601328.SS",
+              "600028.SS","601601.SS","601818.SS","601669.SS","601800.SS","601390.SS","601186.SS","601668.SS","600016.SS","601229.SS",
+              "600585.SS","600690.SS","002352.SZ","300015.SZ","600600.SS","002714.SZ","603288.SS","600測.SS","601919.SS","600406.SS",
+              "000776.SZ","600340.SS","002241.SZ","300274.SZ","601211.SS","600048.SS","002311.SZ","601766.SS","600104.SS","000063.SZ",
+              "002460.SZ","300059.SZ","600309.SS","601633.SS","002027.SZ","600795.SS","601985.SS","600941.SS","601225.SS","002466.SZ",
+              "601117.SS","600426.SS","000895.SZ","601238.SS","600893.SS","000002.SZ","600760.SS","002049.SZ","000768.SZ","601111.SS",
+              "002001.SZ","600031.SS","000157.SZ","002236.SZ","000425.SZ","601727.SS","600999.SS","002230.SZ","600測2.SS","601360.SS",
+              "300122.SZ","002142.SZ","300124.SZ","600436.SS","000100.SZ","002129.SZ","300014.SZ","600745.SS","002463.SZ","605388.SS",
+              "603501.SS","300308.SZ","688981.SS","300502.SZ","300394.SZ","002756.SZ","603799.SS","300769.SZ","688005.SS","002850.SZ",
+              "688772.SS","688116.SS","688388.SS","300751.SZ","300724.SZ","688516.SS","688598.SS","603185.SS","688556.SS","002709.SZ",
+              "300037.SZ","301238.SZ","002865.SZ","300776.SZ","688032.SS","688390.SS","605117.SS","002557.SZ","002507.SZ","003000.SZ",
+              "002847.SZ","002991.SZ","603517.SS","300783.SZ","603719.SS","603777.SS","603057.SS","002873.SZ","300413.SZ","002271.SZ",
+              "300661.SZ","688012.SS","688008.SS","603486.SS","688169.SS","002180.SZ","300433.SZ","002456.SZ","600703.SS","300618.SZ",
+              "300207.SZ","002938.SZ","300363.SZ","603456.SS","000739.SZ","603520.SS","300702.SZ","603229.SS","002940.SZ","002332.SZ",
+              "603538.SS","300636.SZ","600216.SS","002821.SZ","300379.SZ","600845.SS","300687.SZ","600718.SS","002212.SZ","688023.SS",
+              "300454.SZ","688561.SS","688225.SS","003029.SZ","300579.SZ","002439.SZ","300369.SZ","300768.SZ","300311.SZ","688168.SS",
+              "603236.SS","300638.SZ","688159.SS","002313.SZ","603118.SS","300098.SZ","688418.SS","300620.SZ","000988.SZ","603083.SS",
+              "002792.SZ","002747.SZ","688017.SS","002050.SZ","603728.SS","002895.SZ","688521.SS","688536.SS","688052.SS","688381.SS",
+              "688110.SS","688368.SS","688595.SS","688608.SS","688195.SS","688060.SS","688385.SS","688153.SS","300418.SZ","688327.SS",
+              "688207.SS","688088.SS","688787.SS","300229.SZ","002362.SZ","688322.SS","688552.SS","300182.SZ","688686.SS","688261.SS",
+              "688099.SS","688508.SS","688213.SS","688728.SS","688458.SS","688587.SS","688141.SS","688484.SS","688173.SS","300671.SZ",
+              "688160.SS","002472.SZ","002896.SZ","603915.SS","000837.SZ","300161.SZ","688188.SS","688305.SS","300083.SZ","002095.SZ",
+              "002334.SZ","002979.SZ","603638.SS","603338.SS","603195.SS","301027.SZ","688707.SS","600984.SS","300201.SZ","301064.SZ",
+              "600582.SS","000680.SZ","002318.SZ","603995.SS","603878.SS","688186.SS","600399.SS","601908.SS","000929.SZ","002443.SZ",
+              "002478.SZ","601163.SS","600409.SS","002074.SZ","600872.SS","688206.SS","688333.SS","688234.SS","300045.SZ","688066.SS",
+              "600118.SS","688270.SS","601698.SS","002465.SZ","600879.SS","301049.SZ","001270.SZ","603966.SS","688523.SS","300627.SZ",
+              "002151.SZ","688340.SS","300101.SZ","300342.SZ","002402.SZ","600111.SS","000831.SZ","600392.SS","600549.SS","002056.SZ",
+              "600366.SS","300224.SZ","300748.SZ","688077.SS","300127.SZ","000969.SZ","600206.SS","600259.SS","002167.SZ","002028.SZ",
+              "002364.SZ","603070.SS","688517.SS","688100.SS","300682.SZ","000682.SZ","603050.SS","300360.SZ","002339.SZ","300490.SZ",
+              "300286.SZ","600968.SS","600871.SS","600256.SS","002207.SZ","002353.SZ","601808.SS","688319.SS","603181.SS","605006.SS",
+              "688550.SS","002409.SZ","300054.SZ","688378.SS","300576.SZ","300429.SZ","603650.SS","688357.SS","600378.SS","002250.SZ",
+              "600486.SS","002601.SZ","600019.SS","000932.SZ","600282.SS","601003.SS","600507.SS","601898.SS","600188.SS","000983.SZ",
+              "603323.SS","601528.SS","600908.SS","601860.SS","002966.SZ","002948.SZ","600928.SS","601187.SS","601963.SS","601997.SS",
+              "601665.SS","001227.SZ","000400.SZ","600312.SS","600089.SS","601179.SS","688041.SS","603019.SS","600570.SS","600588.SS",
+              "688256.SS"
+          ]
 
-              log("涨停筛选", f"扫描股票池共{len(all_stocks)}只")
-              results = []
-              for scode, name in all_stocks.items():
+          # ===== 6c. 涨停后高位整理 + 6d. 明日打板候选（并发扫描大池）=====
+          def scan_large_pool(etf_rows):
+              """
+              并发扫描CSI_POOL，找出：
+              A. 涨停后高位整理：前10日涨停，之后开盘不破涨停开盘价
+              B. 明日打板候选：今日涨停+热门板块+连板<=3+板块内>=2只涨停
+              非ST，非次新股（上市>180天）
+              """
+              from concurrent.futures import ThreadPoolExecutor, as_completed
+              import datetime as _dt
+
+              hot_sectors = set()
+              for sector, code, last, pct, d in etf_rows:
+                  if pct is not None and pct >= 1.0:
+                      hot_sectors.add(code)
+
+              # 反查：股票代码 -> 板块ETF代码
+              stock_to_sector = {}
+              for code_dict in [top_sectors_stocks_global, midcap_stocks_global]:
+                  for etf_code, stocks in code_dict.items():
+                      for name, scode in stocks:
+                          stock_to_sector[scode] = etf_code
+              # CSI_POOL默认归入沪深300/中证500/中证1000板块
+              for scode in CSI_POOL:
+                  if scode not in stock_to_sector:
+                      stock_to_sector[scode] = "510300.SS"  # 默认归入沪深300
+
+              limit_hold   = []  # 高位整理结果
+              candidates   = []  # 打板候选结果
+              sector_limit_count = {}
+
+              def check_stock(scode):
                   try:
-                      hist = yf.Ticker(scode).history(period="20d").dropna(subset=["Close","Open"])
-                      if len(hist) < 5:
-                          continue
-                      # 只看最近15个交易日
-                      hist = hist.tail(15)
+                      hist = yf.Ticker(scode).history(period="25d").dropna(subset=["Close","Open","Volume"])
+                      if len(hist) < 10:
+                          return None
+                      # 过滤次新股（上市<180天）
+                      if len(hist) < 90:
+                          return None
                       closes = hist["Close"].values
                       opens  = hist["Open"].values
+                      vols   = hist["Volume"].values
                       dates  = hist.index
 
-                      # 找前10个交易日内的涨停（涨幅>=9.8%）
+                      # 今日涨幅
+                      today_pct = (closes[-1] - closes[-2]) / closes[-2] * 100
+
+                      # ===== A. 高位整理判断 =====
                       limit_idx = None
-                      for i in range(len(hist) - 2, max(len(hist) - 12, -1), -1):
-                          if i < 1:
-                              continue
-                          pct_chg = (closes[i] - closes[i-1]) / closes[i-1] * 100
-                          if pct_chg >= 9.8:
+                      for i in range(len(closes)-2, max(len(closes)-12, 0), -1):
+                          if i < 1: break
+                          if (closes[i]-closes[i-1])/closes[i-1]*100 >= 9.8:
                               limit_idx = i
                               break
+                      hold_result = None
+                      if limit_idx is not None:
+                          limit_open = opens[limit_idx]
+                          hold = all(opens[j] >= limit_open * 0.995
+                                     for j in range(limit_idx+1, len(hist)))
+                          if hold:
+                              avg_vol = vols[-6:-1].mean()
+                              vol_ratio = vols[-1]/avg_vol if avg_vol > 0 else 1
+                              days_since = len(hist)-1-limit_idx
+                              limit_date = dates[limit_idx].strftime("%m/%d")
+                              hold_result = {
+                                  "scode": scode,
+                                  "close": closes[-1],
+                                  "pct": today_pct,
+                                  "vol_ratio": vol_ratio,
+                                  "limit_date": limit_date,
+                                  "days_since": days_since,
+                              }
 
-                      if limit_idx is None:
-                          continue
+                      # ===== B. 打板候选判断 =====
+                      cand_result = None
+                      etf_code = stock_to_sector.get(scode, "")
+                      if today_pct >= 9.8 and etf_code in hot_sectors:
+                          consec = 1
+                          for i in range(len(closes)-2, max(len(closes)-5,0), -1):
+                              if i < 1: break
+                              if (closes[i]-closes[i-1])/closes[i-1]*100 >= 9.8:
+                                  consec += 1
+                              else:
+                                  break
+                          if consec <= 3:
+                              avg_vol = vols[-6:-1].mean()
+                              vol_ratio = vols[-1]/avg_vol if avg_vol > 0 else 1
+                              score = vol_ratio * (4 - consec)
+                              cand_result = {
+                                  "scode": scode,
+                                  "etf_code": etf_code,
+                                  "close": closes[-1],
+                                  "consec": consec,
+                                  "vol_ratio": vol_ratio,
+                                  "score": score,
+                              }
 
-                      # 涨停后每天开盘价不低于涨停当日开盘价
-                      limit_open = opens[limit_idx]
-                      hold = True
-                      for j in range(limit_idx + 1, len(hist)):
-                          if opens[j] < limit_open * 0.995:  # 允许0.5%误差
-                              hold = False
-                              break
-
-                      if not hold:
-                          continue
-
-                      # 计算当前涨跌幅和量比
-                      last  = closes[-1]
-                      prev  = closes[-2]
-                      pct   = (last - prev) / prev * 100
-                      vol_hist = yf.Ticker(scode).history(period="15d").dropna(subset=["Volume"])
-                      avg_vol  = vol_hist["Volume"].iloc[:-1].mean() if len(vol_hist) > 1 else 0
-                      cur_vol  = vol_hist["Volume"].iloc[-1] if len(vol_hist) > 0 else 0
-                      vol_ratio = cur_vol / avg_vol if avg_vol > 0 else 1
-
-                      limit_date = dates[limit_idx].strftime("%m/%d")
-                      days_since = len(hist) - 1 - limit_idx
-                      arrow = "▲" if pct > 0 else ("▼" if pct < 0 else "—")
-                      results.append((name, scode, last, pct, vol_ratio, limit_date, days_since))
-
+                      return (hold_result, cand_result)
                   except:
-                      continue
+                      return None
 
-              results.sort(key=lambda x: x[3], reverse=True)
-              output = []
-              if results:
-                  for name, scode, last, pct, vol_ratio, limit_date, days_since in results:
-                      arrow = "▲" if pct > 0 else ("▼" if pct < 0 else "—")
-                      vol_tag = f" 量比{vol_ratio:.1f}x" if vol_ratio >= 1.0 else ""
-                      output.append(
-                          f"  {name}({scode}): {last:.2f}  {arrow}{abs(pct):.2f}%{vol_tag}"
-                          f"  [涨停:{limit_date} {days_since}天前]"
+              # 并发扫描
+              with ThreadPoolExecutor(max_workers=15) as executor:
+                  futures = {executor.submit(check_stock, s): s for s in CSI_POOL}
+                  for future in as_completed(futures):
+                      res = future.result()
+                      if res is None:
+                          continue
+                      hold_result, cand_result = res
+                      if hold_result:
+                          limit_hold.append(hold_result)
+                      if cand_result:
+                          candidates.append(cand_result)
+                          ec = cand_result["etf_code"]
+                          sector_limit_count[ec] = sector_limit_count.get(ec, 0) + 1
+
+              # 格式化高位整理
+              limit_hold.sort(key=lambda x: x["pct"], reverse=True)
+              out_hold = []
+              for s in limit_hold:
+                  arrow = "▲" if s["pct"] > 0 else "▼"
+                  out_hold.append(
+                      f"  {s['scode']}: {s['close']:.2f}"
+                      f"  {arrow}{abs(s['pct']):.2f}%  量比{s['vol_ratio']:.1f}x"
+                      f"  [涨停:{s['limit_date']} {s['days_since']}天前]"
+                  )
+              if not out_hold:
+                  out_hold = ["暂无符合条件的股票"]
+
+              # 格式化打板候选（过滤板块内<2只的）
+              qualified = [c for c in candidates if sector_limit_count.get(c["etf_code"],0) >= 2]
+              qualified.sort(key=lambda x: x["score"], reverse=True)
+              out_cand = []
+              if qualified:
+                  out_cand.append(f"共{len(qualified)}只候选 | ⚠️次日自行观察竞价，高开>=2%再介入 | 跌破涨停价当日止损")
+                  out_cand.append("优先级：首板>2连板>3连板，量比越大越好，🔥=热门板块验证")
+                  for c in qualified[:10]:
+                      sector_name = next((s for s,code,*_ in etf_rows if code==c["etf_code"]), c["etf_code"])
+                      consec_tag = "首板" if c["consec"]==1 else f"{c['consec']}连板"
+                      hot = "🔥" if sector_limit_count.get(c["etf_code"],0)>=2 else "  "
+                      out_cand.append(
+                          f"  {hot}{c['scode']}: {c['close']:.2f}"
+                          f"  [{consec_tag}]  量比{c['vol_ratio']:.1f}x  [{sector_name}]"
                       )
               else:
-                  output = ["暂无符合条件的股票"]
-              log("涨停筛选", f"找到{len(results)}只符合条件的股票")
-              return output
+                  out_cand = ["今日大池内暂无符合条件的打板候选"]
 
-          # ===== 7. Gemini AI报告 =====
-          def ai_report(data_text):
-              api_key = os.environ["GEMINI_API_KEY"]
-              try:
-                  r0 = requests.get(f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}", timeout=10)
-                  models = r0.json().get("models", [])
-                  usable = [m["name"].split("/")[1] for m in models
-                            if "generateContent" in m.get("supportedGenerationMethods", [])
-                            and "flash" in m["name"]]
-                  model_name = usable[0] if usable else "gemini-2.0-flash"
-                  log("Gemini", f"使用模型: {model_name}")
-              except Exception as e:
-                  model_name = "gemini-2.0-flash"
-                  log("Gemini", f"模型查询失败: {e}")
+              log("大池扫描", f"高位整理{len(limit_hold)}只，打板候选{len(qualified)}只")
+              return out_hold, out_cand
 
-              url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
-              system_instruction = (
-                  "你是资深券商策略首席分析师。"
-                  "报告必须100%基于提供的真实数据和具体数值。"
-                  "若数据标注失败或暂无则跳过，禁止任何模板化描述。"
-              )
-              prompt = f"""以下是今日完整市场数据，请生成专业投资策略报告：
-
-          {data_text}
-
-          报告结构（每节必须引用上方具体数字和股票名称）：
-
-          【一、全球市场与宏观风险】
-          结合美股科技股涨跌数据和宏观日历事件，分析当前全球市场情绪和近期宏观风险点。
-
-          【二、A股板块轮动分析】
-          重点分析涨幅前5和跌幅前5的板块，说明资金流向逻辑，引用具体板块名称和涨跌幅数值。
-
-          【三、强势标的精选】
-          结合强势股筛选结果，点评量比较大或涨幅突出的个股，说明其所在板块逻辑和关注理由。
-
-          【四、新闻驱动分析】
-          结合今日财经新闻，分析哪些新闻可能对明日A股产生影响，指出受益或受损的板块。
-
-          【五、风险提示】
-          结合宏观事件日历和跌幅较大板块，提示近期需要规避的方向和时间节点。
-
-          【六、明日操作策略】
-          给出明日重点关注的板块和个股候选，说明进场逻辑，必须有数据支撑，约1000字总计。"""
-
-              payload = {
-                  "system_instruction": {"parts": [{"text": system_instruction}]},
-                  "contents": [{"parts": [{"text": prompt}]}],
-                  "generationConfig": {"temperature": 0.3, "maxOutputTokens": 8192}
-              }
-              for attempt in range(3):
-                  r = requests.post(url, json=payload, timeout=60)
-                  if r.status_code == 429:
-                      wait = 30 * (attempt + 1)
-                      log("Gemini", f"429限速，等待{wait}秒重试")
-                      time.sleep(wait)
-                      continue
-                  r.raise_for_status()
-                  text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
-                  log("Gemini", "报告生成成功")
-                  return text
-              raise Exception("Gemini重试3次失败")
-
-          # ===== 8. HTML邮件 =====
-          def to_html(data_text, report):
-              rows = ""
-              for line in data_text.split("\n"):
-                  line = line.strip()
-                  if not line:
-                      continue
-                  if line.startswith("====="):
-                      section = line.replace("=","").strip()
-                      rows += (f"<h3 style='color:#c0392b;margin:16px 0 6px;font-size:15px;"
-                               f"border-left:3px solid #c0392b;padding-left:8px;'>{section}</h3>")
-                  elif line.startswith("【") and line.endswith("】"):
-                      rows += (f"<p style='margin:8px 0 2px;font-size:13px;font-weight:bold;"
-                               f"color:#555;'>{line}</p>")
-                  else:
-                      has_up = "▲" in line
-                      has_dn = "▼" in line
-                      color = "#c0392b" if has_up else ("#27ae60" if has_dn else "#333")
-                      rows += (f"<p style='margin:2px 0;font-size:13px;color:{color};"
-                               f"font-family:monospace;'>{line}</p>")
-              rhtml = report.replace("\n\n","</p><p style='margin:10px 0;'>").replace("\n","<br>")
-              rhtml = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", rhtml)
-              rhtml = f"<p style='margin:10px 0;'>{rhtml}</p>"
-              return (
-                  "<!DOCTYPE html><html><head>"
-                  "<meta charset='utf-8'>"
-                  "<meta name='viewport' content='width=device-width,initial-scale=1.0'>"
-                  "</head>"
-                  "<body style='font-family:-apple-system,BlinkMacSystemFont,sans-serif;"
-                  "max-width:640px;margin:0 auto;padding:16px;background:#f0f2f5;'>"
-                  "<div style='background:#fff;border-radius:12px;padding:20px;"
-                  "box-shadow:0 2px 8px rgba(0,0,0,0.08);'>"
-                  "<h1 style='font-size:20px;color:#1a1a1a;border-bottom:3px solid #c0392b;"
-                  "padding-bottom:10px;margin-top:0;'>📊 AI量化投资日报</h1>"
-                  "<div style='background:#fafafa;border-radius:8px;padding:14px;"
-                  "margin-bottom:16px;'>"
-                  f"{rows}"
-                  "</div>"
-                  "<h2 style='font-size:17px;color:#c0392b;margin-bottom:12px;'>📝 AI策略报告</h2>"
-                  "<div style='line-height:1.8;color:#222;font-size:15px;'>"
-                  f"{rhtml}"
-                  "</div>"
-                  "<div style='font-size:12px;color:#999;border-top:1px solid #eee;"
-                  "margin-top:20px;padding-top:10px;'>"
-                  "本报告由AI基于实时数据自动生成，不构成投资建议。</div>"
-                  "</div></body></html>"
-              )
-
-          def send_mail(subject, data_text, report):
-              sender = os.environ["EMAIL_USER"]
-              password = os.environ["EMAIL_PASS"]
-              msg = MIMEMultipart("alternative")
-              msg["Subject"] = subject
-              msg["From"] = sender
-              msg["To"] = sender
-              msg.attach(MIMEText(f"{data_text}\n\n{report}", "plain", "utf-8"))
-              msg.attach(MIMEText(to_html(data_text, report), "html", "utf-8"))
-              with smtplib.SMTP_SSL("smtp.qq.com", 465) as s:
-                  s.login(sender, password)
-                  s.sendmail(sender, sender, msg.as_string())
-              log("邮件", "发送成功")
-
-          # ===== 6d. 明日打板候选（涨停+热门板块+质量过滤）=====
+                    # ===== 6d. 明日打板候选（涨停+热门板块+质量过滤）=====
           def find_tomorrow_candidates(etf_rows, top_sectors_stocks, midcap_stocks):
               """
               筛选逻辑：
@@ -894,8 +884,7 @@ jobs:
               strong, top_sectors_stocks, top_codes = strong_stocks(etf_rows)
               midcap_result, midcap_stocks = midcap_strong_stocks(etf_rows)
               midcap = midcap_result
-              limit_up    = find_limit_up_stocks(top_sectors_stocks, midcap_stocks, etf_rows)
-              candidates  = find_tomorrow_candidates(etf_rows, top_sectors_stocks, midcap_stocks)
+              limit_up, candidates = scan_large_pool(etf_rows)
               news        = fetch_news()
               macro   = macro_calendar()
 
