@@ -753,6 +753,18 @@ jobs:
                   if scode not in stock_to_sector:
                       stock_to_sector[scode] = "510300.SS"
 
+              # 股票代码->名字映射（从akshare获取的全A股名单）
+              stock_names = {}
+              try:
+                  import akshare as _ak
+                  _df = _ak.stock_info_a_code_name()
+                  for _, row in _df.iterrows():
+                      c = str(row["code"]).zfill(6)
+                      yf_c = c+".SS" if c.startswith(("6","5")) else c+".SZ"
+                      stock_names[yf_c] = row["name"]
+              except:
+                  pass
+
               limit_hold   = []  # 高位整理结果
               candidates   = []  # 打板候选结果
               sector_limit_count = {}
@@ -793,8 +805,12 @@ jobs:
                               vol_ratio = vols[-1]/avg_vol if avg_vol > 0 else 1
                               days_since = len(hist)-1-limit_idx
                               limit_date = dates[limit_idx].strftime("%m/%d")
+                              sname = stock_names.get(scode, scode)
+                              sector = stock_to_sector.get(scode, "510300.SS")
                               hold_result = {
                                   "scode": scode,
+                                  "name": sname,
+                                  "sector": sector,
                                   "close": closes[-1],
                                   "pct": today_pct,
                                   "vol_ratio": vol_ratio,
@@ -845,16 +861,25 @@ jobs:
                           ec = cand_result["etf_code"]
                           sector_limit_count[ec] = sector_limit_count.get(ec, 0) + 1
 
-              # 格式化高位整理
-              limit_hold.sort(key=lambda x: x["pct"], reverse=True)
-              out_hold = []
+              # 格式化高位整理：按板块分组
+              from collections import defaultdict
+              sector_groups = defaultdict(list)
               for s in limit_hold:
-                  arrow = "▲" if s["pct"] > 0 else "▼"
-                  out_hold.append(
-                      f"  {s['scode']}: {s['close']:.2f}"
-                      f"  {arrow}{abs(s['pct']):.2f}%  量比{s['vol_ratio']:.1f}x"
-                      f"  [涨停:{s['limit_date']} {s['days_since']}天前]"
-                  )
+                  sector_groups[s["sector"]].append(s)
+
+              out_hold = []
+              for etf_code, stocks in sector_groups.items():
+                  stocks.sort(key=lambda x: x["pct"], reverse=True)
+                  sector_name = next((sn for sn,c,*_ in etf_rows if c==etf_code), etf_code)
+                  out_hold.append(f"【{sector_name}】")
+                  for s in stocks:
+                      arrow = "▲" if s["pct"] > 0 else "▼"
+                      vol_tag = f"  量比{s['vol_ratio']:.1f}x" if s["vol_ratio"] > 1.5 else ""
+                      out_hold.append(
+                          f"  {s['name']}: {s['close']:.2f}"
+                          f"  {arrow}{abs(s['pct']):.2f}%{vol_tag}"
+                          f"  [涨停:{s['limit_date']} {s['days_since']}天前]"
+                      )
               if not out_hold:
                   out_hold = ["暂无符合条件的股票"]
 
