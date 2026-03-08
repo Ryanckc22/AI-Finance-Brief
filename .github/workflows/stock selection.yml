@@ -704,8 +704,6 @@ jobs:
               log("股票池", f"最终股票池{len(result)}只")
               return result
 
-                    CSI_POOL = []  # 运行时填充
-
           # ===== 6c. 涨停后高位整理 + 6d. 明日打板候选（并发扫描大池）=====
           def scan_large_pool(etf_rows):
               """
@@ -731,10 +729,10 @@ jobs:
                   for etf_code, stocks in code_dict.items():
                       for name, scode in stocks:
                           stock_to_sector[scode] = etf_code
-              # CSI_POOL默认归入沪深300/中证500/中证1000板块
-              for scode in CSI_POOL:
+              # 大池股票默认归入沪深300板块（用于热门板块判断）
+              for scode in scan_pool:
                   if scode not in stock_to_sector:
-                      stock_to_sector[scode] = "510300.SS"  # 默认归入沪深300
+                      stock_to_sector[scode] = "510300.SS"
 
               limit_hold   = []  # 高位整理结果
               candidates   = []  # 打板候选结果
