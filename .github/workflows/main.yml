@@ -608,11 +608,11 @@ jobs:
               "601688.SS","000333.SZ","600030.SS","601012.SS","600887.SS","002415.SZ","601628.SS","600809.SS","000568.SZ","002304.SZ",
               "601899.SS","600438.SS","601088.SS","601857.SS","000651.SZ","601398.SS","601288.SS","601939.SS","601998.SS","601328.SS",
               "600028.SS","601601.SS","601818.SS","601669.SS","601800.SS","601390.SS","601186.SS","601668.SS","600016.SS","601229.SS",
-              "600585.SS","600690.SS","002352.SZ","300015.SZ","600600.SS","002714.SZ","603288.SS","600測.SS","601919.SS","600406.SS",
+              "600585.SS","600690.SS","002352.SZ","300015.SZ","600600.SS","002714.SZ","603288.SS","601919.SS","600406.SS",
               "000776.SZ","600340.SS","002241.SZ","300274.SZ","601211.SS","600048.SS","002311.SZ","601766.SS","600104.SS","000063.SZ",
               "002460.SZ","300059.SZ","600309.SS","601633.SS","002027.SZ","600795.SS","601985.SS","600941.SS","601225.SS","002466.SZ",
               "601117.SS","600426.SS","000895.SZ","601238.SS","600893.SS","000002.SZ","600760.SS","002049.SZ","000768.SZ","601111.SS",
-              "002001.SZ","600031.SS","000157.SZ","002236.SZ","000425.SZ","601727.SS","600999.SS","002230.SZ","600測2.SS","601360.SS",
+              "002001.SZ","600031.SS","000157.SZ","002236.SZ","000425.SZ","601727.SS","600999.SS","002230.SZ","601360.SS",
               "300122.SZ","002142.SZ","300124.SZ","600436.SS","000100.SZ","002129.SZ","300014.SZ","600745.SS","002463.SZ","605388.SS",
               "603501.SS","300308.SZ","688981.SS","300502.SZ","300394.SZ","002756.SZ","603799.SS","300769.SZ","688005.SS","002850.SZ",
               "688772.SS","688116.SS","688388.SS","300751.SZ","300724.SZ","688516.SS","688598.SS","603185.SS","688556.SS","002709.SZ",
@@ -873,6 +873,131 @@ jobs:
 
               log("打板候选", f"筛出{len(qualified)}只")
               return result
+
+          # ===== AI报告 =====
+          def ai_report(data_text):
+              api_key = os.environ["GEMINI_API_KEY"]
+              try:
+                  r0 = requests.get(f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}", timeout=10)
+                  models = r0.json().get("models", [])
+                  usable = [m["name"].split("/")[1] for m in models
+                            if "generateContent" in m.get("supportedGenerationMethods", [])
+                            and "flash" in m["name"]]
+                  model_name = usable[0] if usable else "gemini-2.0-flash"
+                  log("Gemini", f"使用模型: {model_name}")
+              except Exception as e:
+                  model_name = "gemini-2.0-flash"
+                  log("Gemini", f"模型查询失败: {e}")
+              url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
+              system_instruction = (
+                  "你是资深券商策略首席分析师。"
+                  "报告必须100%基于提供的真实数据和具体数值。"
+                  "若数据标注失败或暂无则跳过，禁止任何模板化描述。"
+              )
+              prompt = f"""以下是今日完整市场数据，请生成专业投资策略报告：
+
+          {data_text}
+
+          报告结构（每节必须引用上方具体数字和股票名称）：
+
+          【一、全球市场与宏观风险】
+          结合美股科技股涨跌数据和宏观日历事件，分析当前全球市场情绪和近期宏观风险点。
+
+          【二、A股板块轮动分析】
+          重点分析涨幅前5和跌幅前5的板块，说明资金流向逻辑，引用具体板块名称和涨跌幅数值。
+
+          【三、强势标的精选】
+          结合强势股和中盘股筛选结果，点评量比较大或涨幅突出的个股，说明其所在板块逻辑和关注理由。
+
+          【四、打板与整理机会】
+          结合涨停高位整理和明日打板候选数据，分析短线机会，说明入场逻辑和止损位。
+
+          【五、新闻驱动分析】
+          结合今日财经新闻，分析哪些新闻可能对明日A股产生影响，指出受益或受损的板块。
+
+          【六、风险提示】
+          结合宏观事件日历和跌幅较大板块，提示近期需要规避的方向和时间节点。
+
+          【七、明日操作策略】
+          给出明日重点关注的板块和个股候选，说明进场逻辑，必须有数据支撑，约1000字总计。"""
+              payload = {
+                  "system_instruction": {"parts": [{"text": system_instruction}]},
+                  "contents": [{"parts": [{"text": prompt}]}],
+                  "generationConfig": {"temperature": 0.3, "maxOutputTokens": 8192}
+              }
+              for attempt in range(3):
+                  r = requests.post(url, json=payload, timeout=60)
+                  if r.status_code == 429:
+                      wait = 30 * (attempt + 1)
+                      log("Gemini", f"429限速，等待{wait}秒重试")
+                      time.sleep(wait)
+                      continue
+                  r.raise_for_status()
+                  text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+                  log("Gemini", "报告生成成功")
+                  return text
+              raise Exception("Gemini重试3次失败")
+
+          # ===== HTML邮件 =====
+          def to_html(data_text, report):
+              rows = ""
+              for line in data_text.split("\n"):
+                  line = line.strip()
+                  if not line:
+                      continue
+                  if line.startswith("====="):
+                      section = line.replace("=","").strip()
+                      rows += (f"<h3 style='color:#c0392b;margin:16px 0 6px;font-size:15px;"
+                               f"border-left:3px solid #c0392b;padding-left:8px;'>{section}</h3>")
+                  elif line.startswith("【") and line.endswith("】"):
+                      rows += (f"<p style='margin:8px 0 2px;font-size:13px;font-weight:bold;"
+                               f"color:#555;'>{line}</p>")
+                  else:
+                      has_up = "▲" in line
+                      has_dn = "▼" in line
+                      color = "#c0392b" if has_up else ("#27ae60" if has_dn else "#333")
+                      rows += (f"<p style='margin:2px 0;font-size:13px;color:{color};"
+                               f"font-family:monospace;'>{line}</p>")
+              rhtml = report.replace("\n\n","</p><p style='margin:10px 0;'>").replace("\n","<br>")
+              rhtml = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", rhtml)
+              rhtml = f"<p style='margin:10px 0;'>{rhtml}</p>"
+              return (
+                  "<!DOCTYPE html><html><head>"
+                  "<meta charset='utf-8'>"
+                  "<meta name='viewport' content='width=device-width,initial-scale=1.0'>"
+                  "</head>"
+                  "<body style='font-family:-apple-system,BlinkMacSystemFont,sans-serif;"
+                  "max-width:640px;margin:0 auto;padding:16px;background:#f0f2f5;'>"
+                  "<div style='background:#fff;border-radius:12px;padding:20px;"
+                  "box-shadow:0 2px 8px rgba(0,0,0,0.08);'>"
+                  "<h1 style='font-size:20px;color:#1a1a1a;border-bottom:3px solid #c0392b;"
+                  "padding-bottom:10px;margin-top:0;'>📊 AI量化投资日报</h1>"
+                  "<div style='background:#fafafa;border-radius:8px;padding:14px;margin-bottom:16px;'>"
+                  f"{rows}"
+                  "</div>"
+                  "<h2 style='font-size:17px;color:#c0392b;margin-bottom:12px;'>📝 AI策略报告</h2>"
+                  "<div style='line-height:1.8;color:#222;font-size:15px;'>"
+                  f"{rhtml}"
+                  "</div>"
+                  "<div style='font-size:12px;color:#999;border-top:1px solid #eee;"
+                  "margin-top:20px;padding-top:10px;'>"
+                  "本报告由AI基于实时数据自动生成，不构成投资建议。</div>"
+                  "</div></body></html>"
+              )
+
+          def send_mail(subject, data_text, report):
+              sender = os.environ["EMAIL_USER"]
+              password = os.environ["EMAIL_PASS"]
+              msg = MIMEMultipart("alternative")
+              msg["Subject"] = subject
+              msg["From"] = sender
+              msg["To"] = sender
+              msg.attach(MIMEText(f"{data_text}\n\n{report}", "plain", "utf-8"))
+              msg.attach(MIMEText(to_html(data_text, report), "html", "utf-8"))
+              with smtplib.SMTP_SSL("smtp.qq.com", 465) as s:
+                  s.login(sender, password)
+                  s.sendmail(sender, sender, msg.as_string())
+              log("邮件", "发送成功")
 
           # ===== 主程序 =====
           def main():
