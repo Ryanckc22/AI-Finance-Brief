@@ -742,63 +742,15 @@ jobs:
                   if pct is not None and pct >= 1.0:
                       hot_sectors.add(code)
 
-              # 反查：股票代码 -> 板块ETF代码
-              # 先从30个板块ETF的成分股字典建立映射
+              # 仅用已有字典做热门板块判断（打板候选用）
               stock_to_sector = {}
               for code_dict in [top_sectors_stocks_global, midcap_stocks_global]:
                   for etf_code, stocks in code_dict.items():
                       for name, scode in stocks:
                           stock_to_sector[scode] = etf_code
-
-              # 用 akshare 获取30个板块ETF的完整成分，覆盖全A股
-              try:
-                  import akshare as _ak
-                  SECTOR_ETFS = [
-                      ("512480","芯片/半导体"),("515070","人工智能"),("562500","机器人"),
-                      ("512720","计算机"),("515050","5G/通信"),("516160","卫星/航天"),
-                      ("512400","有色金属"),("159697","油气/石油"),("516020","化工"),
-                      ("515210","钢铁"),("515220","煤炭"),("516780","稀土"),
-                      ("159611","电网设备"),("516950","工程机械"),("512660","国防军工"),
-                      ("515790","光伏"),("515030","新能源车"),("512880","证券"),
-                      ("512800","银行"),("510880","红利"),("510720","央国企"),
-                      ("510300","沪深300"),("510500","中证500"),("512100","中证1000"),
-                      ("588000","科创50"),("159949","创业板50"),("159915","新能源宽基"),
-                      ("159929","医药生物"),("159928","消费"),("510230","金融"),
-                  ]
-                  for etf_code, etf_name in SECTOR_ETFS:
-                      # 判断交易所
-                      yf_etf = etf_code+".SS" if etf_code.startswith(("5","6")) else etf_code+".SZ"
-                      try:
-                          df_cons = _ak.fund_etf_fund_info_em(fund=etf_code)
-                          if df_cons is None or len(df_cons) == 0:
-                              continue
-                          # 找股票代码列
-                          code_col = next((c for c in df_cons.columns if "代码" in c or "code" in c.lower()), None)
-                          if code_col is None:
-                              continue
-                          for c in df_cons[code_col].tolist():
-                              c = str(c).strip().zfill(6)
-                              yf_c = c+".SS" if c.startswith(("6","5")) else c+".SZ"
-                              if yf_c not in stock_to_sector:
-                                  stock_to_sector[yf_c] = yf_etf
-                      except:
-                          pass
-                  log("板块映射", f"ETF成分映射{len(stock_to_sector)}只股票")
-              except Exception as e:
-                  log("板块映射", f"ETF成分获取失败: {e}")
-
-              # 未能归类的股票，按代码前缀判断大类板块（兜底）
-              SECTOR_BY_PREFIX = {
-                  "688": "588000.SS",   # 科创板
-                  "300": "159949.SZ",   # 创业板
-                  "002": "510500.SS",   # 中证500
-                  "001": "510500.SS",
-                  "003": "510500.SS",
-              }
               for scode in scan_pool:
                   if scode not in stock_to_sector:
-                      prefix = scode[:3]
-                      stock_to_sector[scode] = SECTOR_BY_PREFIX.get(prefix, "510300.SS")
+                      stock_to_sector[scode] = "510300.SS"
 
               # 股票代码->名字映射（从akshare获取的全A股名单）
               stock_names = {}
@@ -836,6 +788,7 @@ jobs:
                       today_pct = (closes[-1] - closes[-2]) / closes[-2] * 100
 
                       # ===== A. 高位整理判断 =====
+                      # 六个条件：整理3-10天 / 封板收盘 / 收盘不破 / 开盘不破 / 缩量 / 股价5-100元
                       limit_idx = None
                       for i in range(len(closes)-2, max(len(closes)-12, 0), -1):
                           if i < 1: break
@@ -844,26 +797,44 @@ jobs:
                               break
                       hold_result = None
                       if limit_idx is not None:
-                          limit_open = opens[limit_idx]
-                          hold = all(opens[j] >= limit_open * 0.995
-                                     for j in range(limit_idx+1, len(hist)))
-                          if hold:
-                              avg_vol = vols[-6:-1].mean()
-                              vol_ratio = vols[-1]/avg_vol if avg_vol > 0 else 1
-                              days_since = len(hist)-1-limit_idx
-                              limit_date = dates[limit_idx].strftime("%m/%d")
-                              sname = stock_names.get(scode, scode)
-                              sector = stock_to_sector.get(scode, "510300.SS")
-                              hold_result = {
-                                  "scode": scode,
-                                  "name": sname,
-                                  "sector": sector,
-                                  "close": closes[-1],
-                                  "pct": today_pct,
-                                  "vol_ratio": vol_ratio,
-                                  "limit_date": limit_date,
-                                  "days_since": days_since,
-                              }
+                          days_since = len(hist)-1-limit_idx
+                          if 3 <= days_since <= 10:
+                              limit_close = closes[limit_idx]
+                              limit_open  = opens[limit_idx]
+                              limit_vol   = vols[limit_idx]
+                              prev_close  = closes[limit_idx-1] if limit_idx >= 1 else limit_close/1.1
+                              # 条件1: 封板收盘（涨停日收盘涨幅>=9.5%）
+                              limit_pct = (limit_close - prev_close) / prev_close * 100
+                              if limit_pct < 9.5:
+                                  pass
+                              else:
+                                  after_closes = closes[limit_idx+1:]
+                                  after_opens  = opens[limit_idx+1:]
+                                  after_vols   = vols[limit_idx+1:]
+                                  avg_after_vol = after_vols.mean() if len(after_vols) > 0 else limit_vol
+                                  # 条件2: 收盘不破涨停收盘价
+                                  # 条件3: 开盘不破涨停开盘价
+                                  # 条件4: 整理期间缩量（均量<涨停日60%）
+                                  # 条件5: 股价5-100元
+                                  if (all(c >= limit_close * 0.995 for c in after_closes) and
+                                      all(o >= limit_open  * 0.995 for o in after_opens)  and
+                                      avg_after_vol < limit_vol * 0.6                     and
+                                      5 <= closes[-1] <= 100):
+                                      avg_vol   = vols[-6:-1].mean()
+                                      vol_ratio = vols[-1]/avg_vol if avg_vol > 0 else 1
+                                      shrink    = avg_after_vol / limit_vol
+                                      limit_date = dates[limit_idx].strftime("%m/%d")
+                                      sname = stock_names.get(scode, scode)
+                                      hold_result = {
+                                          "scode":      scode,
+                                          "name":       sname,
+                                          "close":      closes[-1],
+                                          "pct":        today_pct,
+                                          "vol_ratio":  vol_ratio,
+                                          "shrink":     shrink,
+                                          "limit_date": limit_date,
+                                          "days_since": days_since,
+                                      }
 
                       # ===== B. 打板候选判断 =====
                       cand_result = None
@@ -908,24 +879,47 @@ jobs:
                           ec = cand_result["etf_code"]
                           sector_limit_count[ec] = sector_limit_count.get(ec, 0) + 1
 
-              # 格式化高位整理：按板块分组
+              # 对筛出的30-40只股票单独查所属板块
+              def get_stock_sector(scode):
+                  """查单只股票所属板块，用akshare股票信息接口"""
+                  try:
+                      import akshare as _ak
+                      code = scode.replace(".SS","").replace(".SZ","")
+                      df = _ak.stock_individual_info_em(symbol=code)
+                      # 返回的df是两列：item/value
+                      row = df[df["item"].str.contains("行业|板块", na=False)]
+                      if len(row) > 0:
+                          return row.iloc[0]["value"]
+                  except:
+                      pass
+                  return "其他"
+
+              # 并发查板块（30-40只，很快）
               from collections import defaultdict
               sector_groups = defaultdict(list)
-              for s in limit_hold:
-                  sector_groups[s["sector"]].append(s)
+              if limit_hold:
+                  with ThreadPoolExecutor(max_workers=10) as ex:
+                      fut_map = {ex.submit(get_stock_sector, s["scode"]): s for s in limit_hold}
+                      for fut in as_completed(fut_map):
+                          s = fut_map[fut]
+                          try:
+                              s["sector_name"] = fut.result()
+                          except:
+                              s["sector_name"] = "其他"
+                          sector_groups[s["sector_name"]].append(s)
 
               out_hold = []
-              for etf_code, stocks in sector_groups.items():
+              for sector_name, stocks in sorted(sector_groups.items()):
                   stocks.sort(key=lambda x: x["pct"], reverse=True)
-                  sector_name = next((sn for sn,c,*_ in etf_rows if c==etf_code), etf_code)
                   out_hold.append(f"【{sector_name}】")
                   for s in stocks:
                       arrow = "▲" if s["pct"] > 0 else "▼"
                       vol_tag = f"  量比{s['vol_ratio']:.1f}x" if s["vol_ratio"] > 1.5 else ""
+                      shrink_tag = f"  缩量{s['shrink']*100:.0f}%" if s.get('shrink') else ""
                       out_hold.append(
                           f"  {s['name']}: {s['close']:.2f}"
-                          f"  {arrow}{abs(s['pct']):.2f}%{vol_tag}"
-                          f"  [涨停:{s['limit_date']} {s['days_since']}天前]"
+                          f"  {arrow}{abs(s['pct']):.2f}%{vol_tag}{shrink_tag}"
+                          f"  [涨停:{s['limit_date']} 整理{s['days_since']}天]"
                       )
               if not out_hold:
                   out_hold = ["暂无符合条件的股票"]
