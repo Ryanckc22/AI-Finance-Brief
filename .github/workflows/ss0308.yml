@@ -617,33 +617,36 @@ jobs:
 
               import akshare as ak
 
-              # 接口1: csindex官网权重数据（最完整）
-              for symbol, name in [("000300","沪深300"),("000905","中证500"),("000852","中证1000")]:
-                  try:
-                      df = ak.index_stock_cons_weight_csindex(symbol=symbol)
-                      col = "成分券代码" if "成分券代码" in df.columns else df.columns[0]
-                      codes = df[col].tolist()
-                      before = len(pool)
-                      for c in codes:
-                          yf = to_yf(str(c))
-                          if yf not in delisted:
-                              pool.add(yf)
-                      log("股票池", f"接口1 {name}: +{len(pool)-before}只")
-                  except Exception as e:
-                      log("股票池", f"接口1 {name}失败: {e}")
-                      # 接口2: 新浪成分股数据
+              # 全A股列表（去除ST和次新股）
+              try:
+                  df = ak.stock_info_a_code_name()
+                  # 过滤ST
+                  df = df[~df["name"].str.contains("ST|st", na=False)]
+                  codes_all = df["code"].tolist()
+                  names_all = dict(zip(df["code"], df["name"]))
+
+                  # 过滤次新股：上市时间需要通过单独接口判断，这里先加入全部
+                  # 次新股过滤在 check_stock 里通过历史数据长度判断（<90个交易日）
+                  for c in codes_all:
+                      yf = to_yf(str(c))
+                      if yf not in delisted:
+                          pool.add(yf)
+                  log("股票池", f"全A股（去ST）获取{len(pool)}只")
+              except Exception as e:
+                  log("股票池", f"全A股接口失败: {e}，降级用三大指数")
+                  # 降级：三大指数成分
+                  for symbol, name in [("000300","沪深300"),("000905","中证500"),("000852","中证1000")]:
                       try:
-                          df2 = ak.index_stock_cons(symbol=symbol)
-                          col2 = "品种代码" if "品种代码" in df2.columns else df2.columns[0]
-                          codes2 = df2[col2].tolist()
+                          df = ak.index_stock_cons_weight_csindex(symbol=symbol)
+                          col = "成分券代码" if "成分券代码" in df.columns else df.columns[0]
                           before = len(pool)
-                          for c in codes2:
+                          for c in df[col].tolist():
                               yf = to_yf(str(c))
                               if yf not in delisted:
                                   pool.add(yf)
-                          log("股票池", f"接口2 {name}: +{len(pool)-before}只")
+                          log("股票池", f"{name}: +{len(pool)-before}只")
                       except Exception as e2:
-                          log("股票池", f"接口2 {name}失败: {e2}")
+                          log("股票池", f"{name}失败: {e2}")
 
               # === 硬编码兜底（akshare失败时使用）===
               if len(pool) < 500:
@@ -756,11 +759,14 @@ jobs:
 
               def check_stock(scode):
                   try:
-                      hist = yf.Ticker(scode).history(period="25d").dropna(subset=["Close","Open","Volume"])
-                      if len(hist) < 10:
+                      # 用1y数据，既能判断次新股也能做涨停回溯
+                      hist_full = yf.Ticker(scode).history(period="1y").dropna(subset=["Close","Open","Volume"])
+                      # 过滤次新股：上市不足180个交易日跳过
+                      if len(hist_full) < 180:
                           return None
-                      # 过滤次新股（上市<180天）
-                      if len(hist) < 90:
+                      # 取最近25天用于计算
+                      hist = hist_full.tail(25)
+                      if len(hist) < 10:
                           return None
                       closes = hist["Close"].values
                       opens  = hist["Open"].values
