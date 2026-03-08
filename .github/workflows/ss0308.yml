@@ -605,8 +605,8 @@ jobs:
           # ===== 大盘股票池 =====
           def build_stock_pool():
               """
-              优先用 akshare 动态获取沪深300+中证500+中证1000完整成分（约1800只）
-              失败则用硬编码兜底（约400只）
+              动态获取沪深300+中证500+中证1000完整成分（约1800只）
+              多接口备份，确保获取到足够股票
               """
               def to_yf(code):
                   code = str(code).strip().zfill(6)
@@ -615,19 +615,35 @@ jobs:
               delisted = {'301064.SZ','603250.SS','688587.SS','688340.SS'}
               pool = set()
 
-              # === akshare 动态获取（GitHub Actions有外网，大概率成功）===
-              try:
-                  import akshare as ak
-                  for symbol, name in [("000300","沪深300"),("000905","中证500"),("000852","中证1000")]:
+              import akshare as ak
+
+              # 接口1: csindex官网权重数据（最完整）
+              for symbol, name in [("000300","沪深300"),("000905","中证500"),("000852","中证1000")]:
+                  try:
                       df = ak.index_stock_cons_weight_csindex(symbol=symbol)
-                      codes = df["成分券代码"].tolist()
+                      col = "成分券代码" if "成分券代码" in df.columns else df.columns[0]
+                      codes = df[col].tolist()
+                      before = len(pool)
                       for c in codes:
-                          yf = to_yf(c)
+                          yf = to_yf(str(c))
                           if yf not in delisted:
                               pool.add(yf)
-                      log("股票池", f"{name}获取{len(codes)}只")
-              except Exception as e:
-                  log("股票池", f"akshare失败: {e}，使用内置列表")
+                      log("股票池", f"接口1 {name}: +{len(pool)-before}只")
+                  except Exception as e:
+                      log("股票池", f"接口1 {name}失败: {e}")
+                      # 接口2: 新浪成分股数据
+                      try:
+                          df2 = ak.index_stock_cons(symbol=symbol)
+                          col2 = "品种代码" if "品种代码" in df2.columns else df2.columns[0]
+                          codes2 = df2[col2].tolist()
+                          before = len(pool)
+                          for c in codes2:
+                              yf = to_yf(str(c))
+                              if yf not in delisted:
+                                  pool.add(yf)
+                          log("股票池", f"接口2 {name}: +{len(pool)-before}只")
+                      except Exception as e2:
+                          log("股票池", f"接口2 {name}失败: {e2}")
 
               # === 硬编码兜底（akshare失败时使用）===
               if len(pool) < 500:
