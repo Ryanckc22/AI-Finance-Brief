@@ -1,0 +1,934 @@
+name: AI Finance Daily
+
+on:
+  schedule:
+    - cron: '30 0,4,14 * * *'   # 北京时间 08:30 / 12:30 / 22:30
+  workflow_dispatch:
+
+jobs:
+  run-daily-report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          persist-credentials: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install requests yfinance
+      - name: Run
+        env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          EMAIL_USER: ${{ secrets.EMAIL_USER }}
+          EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
+          NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
+        run: |
+          python - << 'PYEOF'
+          import requests, datetime, smtplib, json, re, os, time
+          from email.mime.text import MIMEText
+          from email.mime.multipart import MIMEMultipart
+          import yfinance as yf
+
+          def log(tag, msg):
+              print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {tag}: {msg}")
+
+          # ===== 1. 美股科技股 =====
+          def us_tech_stocks():
+              symbols = {
+                  "NVDA":"英伟达","MSFT":"微软","TSLA":"特斯拉",
+                  "AAPL":"苹果","META":"Meta","GOOGL":"谷歌",
+                  "AMZN":"亚马逊","AMD":"超微半导体"
+              }
+              result = []
+              for i,(s,name) in enumerate(symbols.items(),1):
+                  try:
+                      hist = yf.Ticker(s).history(period="5d").dropna(subset=["Close"])
+                      if len(hist) < 2:
+                          result.append(f"{i}. {name}({s}): 无数据")
+                          continue
+                      prev, last = hist["Close"].iloc[-2], hist["Close"].iloc[-1]
+                      d = hist.index[-1].strftime("%m-%d")
+                      chg = last - prev
+                      result.append(f"{i}. {name}({s})[{d}]: ${last:.2f} {chg:+.2f}({chg/prev*100:+.2f}%)")
+                  except Exception as e:
+                      result.append(f"{i}. {name}({s}) 失败: {e}")
+              log("美股", f"获取{len([r for r in result if '失败' not in r])}条")
+              return result
+
+          # ===== 3. A股板块ETF（按涨跌幅排序）=====
+          def sector_etf():
+              etfs = [
+                  ("芯片/半导体",   "512480.SS"),
+                  ("人工智能(AI)",  "515070.SS"),
+                  ("机器人",        "562500.SS"),
+                  ("计算机",        "512720.SS"),
+                  ("5G/通信",       "515050.SS"),
+                  ("卫星/航天",     "516160.SS"),
+                  ("有色金属",      "512400.SS"),
+                  ("油气/石油",     "159697.SZ"),
+                  ("化工",          "516020.SS"),
+                  ("钢铁",          "515210.SS"),
+                  ("煤炭",          "515220.SS"),
+                  ("稀土/稀有金属","516780.SS"),
+                  ("电网设备",      "159611.SZ"),
+                  ("工程机械",      "516950.SS"),
+                  ("国防军工",      "512660.SS"),
+                  ("光伏",          "515790.SS"),
+                  ("新能源车",      "515030.SS"),
+                  ("证券",          "512880.SS"),
+                  ("银行",          "512800.SS"),
+                  ("红利",          "510880.SS"),
+                  ("央国企",        "510720.SS"),
+                  ("沪深300",       "510300.SS"),
+                  ("中证500",       "510500.SS"),
+                  ("中证1000",      "512100.SS"),
+                  ("科创50",        "588000.SS"),
+                  ("创业板50",      "159949.SZ"),
+                  ("新能源(宽基)",  "159915.SZ"),
+                  ("医药生物",      "159929.SZ"),
+                  ("消费",          "159928.SZ"),
+                  ("金融",          "510230.SS"),
+              ]
+              rows = []
+              for sector, code in etfs:
+                  try:
+                      hist = yf.Ticker(code).history(period="5d").dropna(subset=["Close"])
+                      if len(hist) < 2:
+                          rows.append((sector, code, None, None, None))
+                          continue
+                      prev, last = hist["Close"].iloc[-2], hist["Close"].iloc[-1]
+                      d = hist.index[-1].strftime("%m-%d")
+                      pct = (last - prev) / prev * 100
+                      rows.append((sector, code, last, pct, d))
+                  except:
+                      rows.append((sector, code, None, None, None))
+              rows.sort(key=lambda x: x[3] if x[3] is not None else -999, reverse=True)
+              result = []
+              for i,(sector,code,last,pct,d) in enumerate(rows,1):
+                  if last is None:
+                      result.append(f"{i:2}. {sector}({code}): 暂无数据")
+                  else:
+                      arrow = "▲" if pct > 0 else ("▼" if pct < 0 else "—")
+                      result.append(f"{i:2}. {sector}({code})[{d}]: {last:.3f}  {arrow}{abs(pct):.2f}%")
+              log("板块ETF", f"获取{len([r for r in rows if r[2] is not None])}条")
+              return result, rows  # 返回rows供强势股使用
+
+          # 板块新闻关键词映射
+          SECTOR_KEYWORDS = {
+              "512480.SS": "半导体 芯片",
+              "515070.SS": "人工智能 AI",
+              "562500.SS": "机器人 人形机器人",
+              "512720.SS": "计算机 软件",
+              "515050.SS": "5G 通信",
+              "516160.SS": "卫星 商业航天",
+              "512400.SS": "有色金属 铜 铝",
+              "159697.SZ": "石油 油气",
+              "516020.SS": "化工",
+              "515210.SS": "钢铁",
+              "515220.SS": "煤炭",
+              "516780.SS": "稀土",
+              "159611.SZ": "电网 电力设备",
+              "516950.SS": "工程机械",
+              "512660.SS": "军工 国防",
+              "515790.SS": "光伏 太阳能",
+              "515030.SS": "新能源车 电动车",
+              "512880.SS": "证券 股市",
+              "512800.SS": "银行",
+              "510880.SS": "红利 分红",
+              "510720.SS": "央企 国企",
+              "510300.SS": "沪深300",
+              "510500.SS": "中证500",
+              "512100.SS": "中证1000",
+              "588000.SS": "科创板",
+              "159949.SZ": "创业板",
+              "159915.SZ": "新能源",
+              "159929.SZ": "医药 生物",
+              "159928.SZ": "消费 白酒",
+              "510230.SS": "金融",
+          }
+
+          # ===== 4b. NewsAPI 板块新闻 =====
+          def fetch_sector_news(sector_code, sector_name):
+              api_key = os.environ.get("NEWS_API_KEY", "")
+              if not api_key:
+                  return []
+              keyword = SECTOR_KEYWORDS.get(sector_code, sector_name)
+              try:
+                  url = (f"https://newsapi.org/v2/everything"
+                         f"?q={requests.utils.quote(keyword)}"
+                         f"&language=zh"
+                         f"&sortBy=publishedAt"
+                         f"&pageSize=3"
+                         f"&apiKey={api_key}")
+                  r = requests.get(url, timeout=8)
+                  articles = r.json().get("articles", [])
+                  result = []
+                  for a in articles[:3]:
+                      title = a.get("title","").split(" - ")[0].strip()
+                      pub   = a.get("publishedAt","")[:16].replace("T"," ")
+                      # 转北京时间（UTC+8）
+                      try:
+                          import datetime as _dt
+                          dt = _dt.datetime.strptime(pub, "%Y-%m-%d %H:%M")
+                          dt_bj = dt + _dt.timedelta(hours=8)
+                          pub = dt_bj.strftime("%m/%d %H:%M")
+                      except:
+                          pass
+                      if title:
+                          result.append(f"  📰 [{pub}] {title}")
+                  return result
+              except:
+                  return []
+
+          # ===== 4. 强势股筛选（各强势板块前10大重仓股）=====
+          def strong_stocks(etf_rows):
+              # 全部30个板块龙头股（覆盖所有ETF）
+              top_sectors_stocks = {
+                  "512480.SS": [  # 芯片/半导体
+                      ("中芯国际","688981.SS"),("北方华创","002371.SZ"),("韦尔股份","603501.SS"),
+                      ("澜起科技","688008.SS"),("寒武纪","688256.SS")],
+                  "515070.SS": [  # AI
+                      ("科大讯飞","002230.SZ"),("海光信息","688041.SS"),
+                      ("中科曙光","603019.SS"),("恒生电子","600570.SS"),("用友网络","600588.SS")],
+                  "562500.SS": [  # 机器人
+                      ("埃斯顿","002747.SZ"),("汇川技术","300124.SZ"),("绿的谐波","688017.SS"),
+                      ("三花智控","002050.SZ"),("鸣志电器","603728.SS")],
+                  "512720.SS": [  # 计算机
+                      ("中软国际","354.HK"),("东方通","300379.SZ"),("宝信软件","600845.SS"),
+                      ("赛意信息","300687.SZ"),("neusoft","600718.SS")],
+                  "515050.SS": [  # 5G/通信
+                      ("中兴通讯","000063.SZ"),("中际旭创","300308.SZ"),
+                      ("新易盛","300502.SZ"),("天孚通信","300394.SZ"),("烽火通信","600498.SS")],
+                  "516160.SS": [  # 卫星/航天
+                      ("中国卫通","601698.SS"),("航天宏图","688066.SS"),
+                      ("中国卫星","600118.SS"),("臻镭科技","688270.SS"),("华力创通","300045.SZ")],
+                  "512400.SS": [  # 有色金属
+                      ("紫金矿业","601899.SS"),("洛阳钼业","603993.SS"),
+                      ("中国铝业","601600.SS"),("天齐锂业","002466.SZ"),("赣锋锂业","002460.SZ")],
+                  "159697.SZ": [  # 油气/石油
+                      ("中国石油","601857.SS"),("中国石化","600028.SS"),
+                      ("中国海油","600938.SS"),("ST油服","601808.SS"),("道达股份","603329.SS")],
+                  "516020.SS": [  # 化工
+                      ("万华化学","600309.SS"),("华鲁恒升","600426.SS"),
+                      ("扬农化工","600486.SS"),("龙佰集团","002601.SZ"),("新和成","002001.SZ")],
+                  "515210.SS": [  # 钢铁
+                      ("宝钢股份","600019.SS"),("华菱钢铁","000932.SZ"),
+                      ("南钢股份","600282.SS"),("柳钢股份","601003.SS"),("方大特钢","600507.SS")],
+                  "515220.SS": [  # 煤炭
+                      ("中国神华","601088.SS"),("陕西煤业","601225.SS"),
+                      ("中煤能源","601898.SS"),("兖矿能源","600188.SS"),("山西焦煤","000983.SZ")],
+                  "516780.SS": [  # 稀土/稀有金属
+                      ("北方稀土","600111.SS"),("中国稀土","000831.SZ"),
+                      ("盛和资源","600392.SS"),("厦门钨业","600549.SS"),("永磁ETF","159743.SZ")],
+                  "159611.SZ": [  # 电网设备
+                      ("特变电工","600089.SS"),("中国西电","601179.SS"),
+                      ("许继电气","000400.SZ"),("平高电气","600312.SS"),("国电南瑞","600406.SS")],
+                  "516950.SS": [  # 工程机械
+                      ("三一重工","600031.SS"),("中联重科","000157.SZ"),
+                      ("徐工机械","000425.SZ"),("柳工","000528.SZ"),("恒立液压","601100.SS")],
+                  "512660.SS": [  # 国防军工
+                      ("中航沈飞","600760.SS"),("航发动力","600893.SS"),
+                      ("中直股份","600038.SS"),("中航西飞","000768.SZ"),("紫光国微","002049.SZ")],
+                  "515790.SS": [  # 光伏
+                      ("隆基绿能","601012.SS"),("通威股份","600438.SS"),
+                      ("晶澳科技","002459.SZ"),("阳光电源","300274.SZ"),("福斯特","603806.SS")],
+                  "515030.SS": [  # 新能源车
+                      ("比亚迪","002594.SZ"),("宁德时代","300750.SZ"),
+                      ("亿纬锂能","300014.SZ"),("欣旺达","300207.SZ"),("天赐材料","002709.SZ")],
+                  "512880.SS": [  # 证券
+                      ("东方财富","300059.SZ"),("中信证券","600030.SS"),
+                      ("华泰证券","601688.SS"),("国泰君安","601211.SS"),("广发证券","000776.SZ")],
+                  "512800.SS": [  # 银行
+                      ("招商银行","600036.SS"),("工商银行","601398.SS"),
+                      ("平安银行","000001.SZ"),("兴业银行","601166.SS"),("宁波银行","002142.SZ")],
+                  "510880.SS": [  # 红利
+                      ("长江电力","600900.SS"),("中国神华","601088.SS"),
+                      ("中国移动","600941.SS"),("贵州茅台","600519.SS"),("中国煤炭","601898.SS")],
+                  "510720.SS": [  # 央国企
+                      ("中国建筑","601668.SS"),("中国中铁","601390.SS"),
+                      ("中国交建","601800.SS"),("中国电建","601669.SS"),("中国铁建","601186.SS")],
+                  "510300.SS": [  # 沪深300
+                      ("贵州茅台","600519.SS"),("宁德时代","300750.SZ"),
+                      ("招商银行","600036.SS"),("比亚迪","002594.SZ"),("中国平安","601318.SS")],
+                  "510500.SS": [  # 中证500
+                      ("沪电股份","002463.SZ"),("三友化工","600409.SS"),
+                      ("国轩高科","002074.SZ"),("东鹏饮料","605388.SS"),("牧原股份","002714.SZ")],
+                  "512100.SS": [  # 中证1000
+                      ("奥普特","688686.SS"),("博腾股份","300363.SZ"),
+                      ("东微半导","688261.SS"),("晶晨股份","688099.SS"),("芯朋微","688508.SS")],
+                  "588000.SS": [  # 科创50
+                      ("中芯国际","688981.SS"),("寒武纪","688256.SS"),
+                      ("海光信息","688041.SS"),("金山办公","688111.SS"),("澜起科技","688008.SS")],
+                  "159949.SZ": [  # 创业板50
+                      ("宁德时代","300750.SZ"),("东方财富","300059.SZ"),
+                      ("汇川技术","300124.SZ"),("爱尔眼科","300015.SZ"),("迈瑞医疗","300760.SZ")],
+                  "159915.SZ": [  # 新能源(宽基)
+                      ("宁德时代","300750.SZ"),("比亚迪","002594.SZ"),
+                      ("隆基绿能","601012.SS"),("阳光电源","300274.SZ"),("亿纬锂能","300014.SZ")],
+                  "159929.SZ": [  # 医药生物
+                      ("迈瑞医疗","300760.SZ"),("恒瑞医药","600276.SS"),
+                      ("药明康德","603259.SS"),("爱尔眼科","300015.SZ"),("片仔癀","600436.SS")],
+                  "159928.SZ": [  # 消费
+                      ("贵州茅台","600519.SS"),("五粮液","000858.SZ"),
+                      ("伊利股份","600887.SS"),("美的集团","000333.SZ"),("海天味业","603288.SS")],
+                  "510230.SS": [  # 金融
+                      ("中国平安","601318.SS"),("招商银行","600036.SS"),
+                      ("中信证券","600030.SS"),("兴业银行","601166.SS"),("中国人寿","601628.SS")],
+              }
+
+              # 找出涨幅前5的板块代码
+              valid = [(code, pct) for (_, code, _, pct, _) in etf_rows if pct is not None]
+              valid.sort(key=lambda x: x[1], reverse=True)
+              top_codes = [code for code, _ in valid[:5]]
+
+              result = []
+              checked = set()
+              for code in top_codes:
+                  stocks = top_sectors_stocks.get(code, [])
+                  sector_name = next((s for s,c,*_ in [r for r in etf_rows] if c==code), code)
+                  strong = []
+                  for name, scode in stocks:
+                      if scode in checked:
+                          continue
+                      checked.add(scode)
+                      try:
+                          hist = yf.Ticker(scode).history(period="5d").dropna(subset=["Close"])
+                          if len(hist) < 2:
+                              continue
+                          prev, last = hist["Close"].iloc[-2], hist["Close"].iloc[-1]
+                          vol_hist = yf.Ticker(scode).history(period="10d").dropna(subset=["Volume"])
+                          avg_vol = vol_hist["Volume"].iloc[:-1].mean() if len(vol_hist) > 1 else 0
+                          cur_vol = vol_hist["Volume"].iloc[-1] if len(vol_hist) > 0 else 0
+                          vol_ratio = cur_vol / avg_vol if avg_vol > 0 else 1
+                          pct = (last - prev) / prev * 100
+                          strong.append((name, scode, last, pct, vol_ratio))
+                      except:
+                          continue
+                  strong.sort(key=lambda x: x[3], reverse=True)
+                  if strong:
+                      result.append(f"【{sector_name}强势股】")  # 先加标题
+                      for name, scode, last, pct, vol_ratio in strong[:3]:  # 再加股票
+                          arrow = "▲" if pct > 0 else "▼"
+                          vol_tag = f" 量比{vol_ratio:.1f}x" if vol_ratio > 1.5 else ""
+                          result.append(f"  {name}({scode}): {last:.2f}  {arrow}{abs(pct):.2f}%{vol_tag}")
+                      # 板块相关新闻（NewsAPI）
+                      sector_news = fetch_sector_news(code, sector_name)
+                      if sector_news:
+                          result.append(f"  ─ {sector_name}相关新闻 ─")
+                          result.extend(sector_news)
+
+              if not result:
+                  return ["强势股数据获取中..."]
+              log("强势股", f"筛选完成，共{len([r for r in result if '【' not in r])}只")
+              return result, top_sectors_stocks, top_codes
+
+          # ===== 5. 财经新闻（Google News RSS）=====
+          def fetch_news():
+              from email.utils import parsedate_to_datetime
+              queries = [
+                  ("A股/中国市场", "https://news.google.com/rss/search?q=A股+股市&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"),
+                  ("科技/AI",      "https://news.google.com/rss/search?q=人工智能+科技股&hl=zh-CN&gl=CN&ceid=CN:zh-Hans"),
+                  ("宏观经济",     "https://news.google.com/rss/search?q=美联储+经济+利率&hl=en-US&gl=US&ceid=US:en"),
+              ]
+              all_news = []
+              for category, url in queries:
+                  try:
+                      r = requests.get(url, timeout=8, headers={"User-Agent":"Mozilla/5.0"})
+                      # 同时提取标题和发布时间
+                      items = re.findall(
+                          r"<item>.*?<title><!\[CDATA\[(.+?)\]\]></title>.*?<pubDate>(.+?)</pubDate>.*?</item>",
+                          r.text, re.DOTALL)
+                      if not items:
+                          # 备用：无CDATA格式
+                          titles = re.findall(r"<title>(.+?)</title>", r.text)[1:5]
+                          dates  = re.findall(r"<pubDate>(.+?)</pubDate>", r.text)[:4]
+                          items  = list(zip(titles, dates + [""] * 4))
+                      headlines = []
+                      for title, pub in items[:4]:
+                          title = title.strip()
+                          if not title or "Google" in title:
+                              continue
+                          # 解析时间，转换为北京时间
+                          try:
+                              dt = parsedate_to_datetime(pub.strip())
+                              # 转北京时间 UTC+8
+                              import datetime as _dt
+                              bj = dt.utctimetuple()
+                              bj_hour = (dt.hour + 8) % 24
+                              time_str = f"{dt.month:02d}/{dt.day:02d} {bj_hour:02d}:{dt.minute:02d}"
+                          except:
+                              time_str = ""
+                          tag = f"[{time_str}] " if time_str else ""
+                          headlines.append(f"  • {tag}{title}")
+                      if headlines:
+                          all_news.append(f"【{category}】")
+                          all_news.extend(headlines)
+                  except Exception as e:
+                      all_news.append(f"【{category}】获取失败: {e}")
+              log("新闻", f"获取{len([n for n in all_news if '•' in n])}条")
+              return all_news if all_news else ["新闻获取失败"]
+
+          # ===== 6. 宏观日历 =====
+          def macro_calendar():
+              now = datetime.datetime.utcnow()
+              # 重要宏观事件硬编码（2026年）
+              events = [
+                  (datetime.date(2026, 3, 10), "🇺🇸 美国CPI数据公布"),
+                  (datetime.date(2026, 3, 17), "🇺🇸 美国零售销售数据"),
+                  (datetime.date(2026, 3, 18), "🇺🇸 美联储FOMC利率决议"),
+                  (datetime.date(2026, 3, 19), "🇺🇸 美联储新闻发布会"),
+                  (datetime.date(2026, 3, 20), "🇯🇵 日本央行利率决议"),
+                  (datetime.date(2026, 4, 1),  "🇨🇳 中国PMI数据公布"),
+                  (datetime.date(2026, 4, 3),  "🇺🇸 美国非农就业数据"),
+                  (datetime.date(2026, 4, 10), "🇺🇸 美国CPI数据公布"),
+                  (datetime.date(2026, 4, 29), "🇺🇸 美联储FOMC利率决议"),
+                  (datetime.date(2026, 5, 1),  "🇺🇸 美国非农就业数据"),
+                  (datetime.date(2026, 5, 8),  "🇨🇳 中国外贸数据"),
+                  (datetime.date(2026, 6, 10), "🇺🇸 美联储FOMC利率决议"),
+              ]
+              today = now.date()
+              result = []
+              for event_date, event_name in events:
+                  delta = (event_date - today).days
+                  if delta < 0:
+                      continue
+                  elif delta == 0:
+                      result.append(f"🔴 今日：{event_name}")
+                  elif delta == 1:
+                      result.append(f"🟠 明日：{event_name}")
+                  elif delta <= 7:
+                      result.append(f"🟡 {delta}天后({event_date.strftime('%m/%d')})：{event_name}")
+                  elif delta <= 14:
+                      result.append(f"⚪ {delta}天后({event_date.strftime('%m/%d')})：{event_name}")
+              if not result:
+                  result = ["未来两周内无重大宏观事件"]
+              log("宏观日历", f"找到{len(result)}个事件")
+              return result[:6]  # 最多显示6个
+
+          # ===== 6b. 中盘强势股（100-500亿市值，各板块涨幅前5）=====
+          def midcap_strong_stocks(etf_rows):
+              # 预筛100-500亿市值中盘股，按板块分组
+              midcap_stocks = {
+                  "512480.SS": [  # 芯片/半导体
+                      ("芯原股份","688521.SS"),("思瑞浦","688536.SS"),("纳芯微","688052.SS"),
+                      ("帝奥微","688381.SS"),("东芯股份","688110.SS"),("晶丰明源","688368.SS"),
+                      ("芯海科技","688595.SS"),("恒玄科技","688608.SS"),("峰岹科技","688195.SS"),
+                      ("云涌科技","688060.SS"),("复旦微电","688385.SS"),("唯捷创芯","688153.SS")],
+                  "515070.SS": [  # AI
+                      ("昆仑万维","300418.SZ"),("云从科技","688327.SS"),("格灵深瞳","688207.SS"),
+                      ("虹软科技","688088.SS"),("海天瑞声","688787.SS"),("拓尔思","300229.SZ"),
+                      ("汉王科技","002362.SZ"),("奥比中光","688322.SS"),("思必驰","688552.SS"),
+                      ("捷成股份","300182.SZ"),("视觉中国","000681.SZ"),("数据港","603881.SS")],
+                  "562500.SS": [  # 机器人
+                      ("步科股份","688160.SS"),("双环传动","002472.SZ"),("中大力德","002896.SZ"),
+                      ("国茂股份","603915.SS"),("秦川机床","000837.SZ"),("华中数控","300161.SZ"),
+                      ("柏楚电子","688188.SS"),("科德数控","688305.SS"),("创世纪","300083.SZ"),
+                      ("海得控制","002095.SZ"),("英威腾","002334.SZ"),("雷赛智能","002979.SZ")],
+                  "512720.SS": [  # 计算机
+                      ("天融信","002212.SZ"),("安恒信息","688023.SS"),("深信服","300454.SZ"),
+                      ("奇安信","688561.SS"),("亚信安全","688225.SS"),("吉大正元","003029.SZ"),
+                      ("数字认证","300579.SZ"),("启明星辰","002439.SZ"),("绿盟科技","300369.SZ"),
+                      ("迪普科技","300768.SZ"),("任子行","300311.SZ"),("安博通","688168.SS")],
+                  "515050.SS": [  # 5G/通信
+                      ("移远通信","603236.SS"),("广和通","300638.SZ"),("有方科技","688159.SS"),
+                      ("日海智能","002313.SZ"),("共进股份","603118.SS"),("高新兴","300098.SZ"),
+                      ("震有科技","688418.SS"),("光库科技","300620.SZ"),("华工科技","000988.SZ"),
+                      ("剑桥科技","603083.SS"),("银信科技","688051.SS"),("通宇通讯","002792.SZ")],
+                  "516160.SS": [  # 卫星/航天
+                      ("海格通信","002465.SZ"),("航天电子","600879.SS"),("雷电微力","301049.SZ"),
+                      ("铖昌科技","001270.SZ"),("上海沪工","603966.SS"),("航天环宇","688523.SS"),
+                      ("华测导航","300627.SZ"),("北斗星通","002151.SZ"),("海南卫星","688340.SS"),
+                      ("振芯科技","300101.SZ"),("天银机电","300342.SZ"),("和而泰","002402.SZ")],
+                  "512400.SS": [  # 有色金属
+                      ("铜陵有色","000630.SZ"),("中国稀土","000831.SZ"),("盛和资源","600392.SS"),
+                      ("西部矿业","601168.SS"),("金诚信","603979.SS"),("华友钴业","603799.SS"),
+                      ("寒锐钴业","300618.SZ"),("永兴材料","002756.SZ"),("中矿资源","002738.SZ"),
+                      ("厦门钨业","600549.SS"),("博威合金","601137.SS"),("翔鹭钨业","002842.SZ")],
+                  "159697.SZ": [  # 油气/石油
+                      ("海油发展","600968.SS"),("石化油服","600871.SS"),("广汇能源","600256.SS"),
+                      ("准油股份","002207.SZ"),("杰瑞股份","002353.SZ"),("中海油服","601808.SS"),
+                      ("博迈科","688319.SS"),("浩洋股份","300833.SZ"),("科新机电","300092.SZ"),
+                      ("天利科技","300399.SZ"),("通源石油","300164.SZ"),("华油能源","600760.SS")],
+                  "516020.SS": [  # 化工
+                      ("联化科技","002250.SZ"),("瑞联新材","688550.SS"),("皇马科技","603181.SS"),
+                      ("圣化股份","605006.SS"),("雅克科技","002409.SZ"),("鼎龙股份","300054.SZ"),
+                      ("奥来德","688378.SS"),("容大感光","300576.SZ"),("强力新材","300429.SZ"),
+                      ("彤程新材","603650.SS"),("建龙微纳","688357.SS"),("昊华科技","600378.SS")],
+                  "515210.SS": [  # 钢铁
+                      ("中信特钢","000708.SZ"),("久立特材","002318.SZ"),("甬金股份","603995.SS"),
+                      ("武进不锈","603878.SS"),("广大特材","688186.SS"),("抚顺特钢","600399.SS"),
+                      ("永兴特钢","002756.SZ"),("德龙不锈","601908.SS"),("西王特钢","000929.SZ"),
+                      ("金洲管道","002443.SZ"),("常宝股份","002478.SZ"),("伊犁钢铁","600581.SS")],
+                  "515220.SS": [  # 煤炭
+                      ("里易能源","600758.SS"),("靖远煤电","000552.SZ"),("甘肃能化","000899.SZ"),
+                      ("新集能源","601918.SS"),("建投能源","000600.SZ"),("平煤股份","601666.SS"),
+                      ("开滦股份","600997.SS"),("恒源煤电","600971.SS"),("金能科技","603113.SS"),
+                      ("云煤能源","600792.SS"),("盘江股份","600395.SS"),("华阳股份","600985.SS")],
+                  "516780.SS": [  # 稀土/稀有金属
+                      ("英洛华","000795.SZ"),("中科磁业","300748.SZ"),("横店东磁","002056.SZ"),
+                      ("宁波韵升","600366.SS"),("正海磁材","300224.SZ"),("金力永磁","300748.SZ"),
+                      ("大地熊","688077.SS"),("银河磁体","300127.SZ"),("安泰科技","000969.SZ"),
+                      ("有研新材","600206.SS"),("广晟有色","600259.SS"),("东方锆业","002167.SZ")],
+                  "159611.SZ": [  # 电网设备
+                      ("思源电气","002028.SZ"),("中恒电气","002364.SZ"),("万控智造","603070.SS"),
+                      ("金冠电气","688517.SS"),("威胜信息","688100.SS"),("朗新科技","300682.SZ"),
+                      ("东方电子","000682.SZ"),("科林电气","603050.SS"),("炬华科技","300360.SZ"),
+                      ("积成电子","002339.SZ"),("华自科技","300490.SZ"),("安科瑞","300286.SZ")],
+                  "516950.SS": [  # 工程机械
+                      ("艾迪精密","603638.SS"),("浙江鼎力","603338.SS"),("星邦智能","603195.SS"),
+                      ("博雷顿","301027.SZ"),("维特股份","688707.SS"),("建设机械","600984.SS"),
+                      ("海伦哲","300201.SZ"),("石煤机","301064.SZ"),("天地科技","600582.SS"),
+                      ("山推股份","000680.SZ"),("远兴能源","000683.SZ"),("宁畅信息","301011.SZ")],
+                  "512660.SS": [  # 国防军工
+                      ("四川九洲","000801.SZ"),("振华科技","000733.SZ"),("天和防务","300397.SZ"),
+                      ("北方导航","600435.SS"),("内蒙一机","600967.SS"),("航天彩虹","430047.BJ"),
+                      ("红宇新材","300345.SZ"),("新研股份","300159.SZ"),("航天工程","603698.SS"),
+                      ("晨曦航空","300581.SZ"),("海特高新","002023.SZ"),("菲利华","300395.SZ")],
+                  "515790.SS": [  # 光伏
+                      ("钧达股份","002865.SZ"),("帝尔激光","300776.SZ"),("迈为股份","300751.SZ"),
+                      ("奥特维","688516.SS"),("金博股份","688598.SS"),("宇晶股份","002943.SZ"),
+                      ("捷佳伟创","300724.SZ"),("高测股份","688556.SS"),("罗博特科","300757.SZ"),
+                      ("德业股份","605117.SS"),("禾迈股份","688032.SS"),("固德威","688390.SS")],
+                  "515030.SS": [  # 新能源车
+                      ("科达利","002850.SZ"),("珠海冠宇","688772.SS"),("天奈科技","688116.SS"),
+                      ("嘉元科技","688388.SS"),("德方纳米","300769.SZ"),("容百科技","688005.SS"),
+                      ("华友钴业","603799.SS"),("芳源股份","688148.SS"),("瑞泰新材","301238.SZ"),
+                      ("新宙邦","300037.SZ"),("天赐材料","002709.SZ"),("石英股份","603185.SS")],
+                  "512880.SS": [  # 证券
+                      ("中泰证券","600918.SS"),("西部证券","002673.SZ"),("东北证券","000686.SZ"),
+                      ("红塔证券","601236.SS"),("财达证券","600906.SS"),("国联证券","601456.SS"),
+                      ("南京证券","601990.SS"),("华林证券","002945.SZ"),("太平洋证券","601099.SS"),
+                      ("长城证券","002939.SZ"),("东吴证券","601555.SS"),("首创证券","601136.SS")],
+                  "512800.SS": [  # 银行
+                      ("苏农银行","603323.SS"),("瑞丰银行","601528.SS"),("无锡银行","600908.SS"),
+                      ("紫金银行","601860.SS"),("苏州银行","002966.SZ"),("青岛银行","002948.SZ"),
+                      ("西安银行","600928.SS"),("厦门银行","601187.SS"),("重庆银行","601963.SS"),
+                      ("贵阳银行","601997.SS"),("齐鲁银行","601665.SS"),("兰州银行","001227.SZ")],
+                  "510880.SS": [  # 红利
+                      ("皖能电力","000543.SZ"),("建投能源","000600.SZ"),("粤电力A","000539.SZ"),
+                      ("华能水电","600025.SS"),("桂冠电力","600236.SS"),("岳阳林纸","600963.SS"),
+                      ("东方能源","000958.SZ"),("湖南发展","000722.SZ"),("大唐发电","601991.SS"),
+                      ("国投电力","600886.SS"),("浙能电力","600642.SS"),("内蒙华电","600863.SS")],
+                  "510720.SS": [  # 央国企
+                      ("中国铁路","601117.SS"),("中国电气","601949.SS"),("中国核电","601985.SS"),
+                      ("中国广核","003816.SZ"),("华润电力","836.HK"),("大唐集团","601991.SS"),
+                      ("国家能源","600655.SS"),("中国电建","601669.SS"),("葛洲坝","600068.SS"),
+                      ("中国化学","601117.SS"),("中材国际","600970.SS"),("中国交建","601800.SS")],
+                  "510300.SS": [  # 沪深300中盘
+                      ("三花智控","002050.SZ"),("华润三九","000999.SZ"),("华东医药","000963.SZ"),
+                      ("国投资本","600061.SS"),("中国电影","002739.SZ"),("传化智联","002010.SZ"),
+                      ("永辉超市","601933.SS"),("大商股份","600694.SS"),("步步高","002251.SZ"),
+                      ("三峰环境","601827.SS"),("中国天楹","000035.SZ"),("旺能环境","002034.SZ")],
+                  "510500.SS": [  # 中证500
+                      ("沪电股份","002463.SZ"),("东鹏饮料","605388.SS"),("牧原股份","002714.SZ"),
+                      ("三角轮胎","601163.SS"),("双汇发展","000895.SZ"),("中炬高新","600872.SS"),
+                      ("洽洽食品","002557.SZ"),("涪陵榨菜","002507.SZ"),("绝味食品","603517.SS"),
+                      ("劲仔食品","003000.SZ"),("盐津铺子","002847.SZ"),("甘源食品","002991.SZ")],
+                  "512100.SS": [  # 中证1000
+                      ("晶晨股份","688099.SS"),("芯朋微","688508.SS"),("东微半导","688261.SS"),
+                      ("奥普特","688686.SS"),("思特威","688213.SS"),("格科微","688728.SS"),
+                      ("芯导科技","688458.SS"),("矽力杰","688587.SS"),("杰华特","688141.SS"),
+                      ("南芯科技","688484.SS"),("希荻微","688173.SS"),("富满微","300671.SZ")],
+                  "588000.SS": [  # 科创50
+                      ("概伦电子","688206.SS"),("铂力特","688333.SS"),("天岳先进","688234.SS"),
+                      ("芯原股份","688521.SS"),("纳芯微","688052.SS"),("思瑞浦","688536.SS"),
+                      ("帝奥微","688381.SS"),("奥来德","688378.SS"),("敏芯股份","688286.SS"),
+                      ("炬芯科技","688220.SS"),("赛微微电","688325.SS"),("唯捷创芯","688153.SS")],
+                  "159949.SZ": [  # 创业板50
+                      ("蓝思科技","300433.SZ"),("欧菲光","002456.SZ"),("三安光电","600703.SS"),
+                      ("闻泰科技","600745.SS"),("芒果超媒","300413.SZ"),("东方雨虹","002271.SZ"),
+                      ("圣邦股份","300661.SZ"),("中微公司","688012.SS"),("澜起科技","688008.SS"),
+                      ("科沃斯","603486.SS"),("石头科技","688169.SS"),("纳思达","002180.SZ")],
+                  "159915.SZ": [  # 新能源(宽基)
+                      ("钧达股份","002865.SZ"),("帝尔激光","300776.SZ"),("奥特维","688516.SS"),
+                      ("天奈科技","688116.SS"),("珠海冠宇","688772.SS"),("科达利","002850.SZ"),
+                      ("嘉元科技","688388.SS"),("德方纳米","300769.SZ"),("容百科技","688005.SS"),
+                      ("高测股份","688556.SS"),("迈为股份","300751.SZ"),("捷佳伟创","300724.SZ")],
+                  "159929.SZ": [  # 医药生物
+                      ("凯莱英","002821.SZ"),("博腾股份","300363.SZ"),("九洲药业","603456.SS"),
+                      ("普洛药业","000739.SZ"),("司太立","603520.SS"),("天宇股份","300702.SZ"),
+                      ("奥翔药业","603229.SS"),("昂利康","002940.SZ"),("仙琚制药","002332.SZ"),
+                      ("美诺华","603538.SS"),("同和药业","300636.SZ"),("浙江医药","600216.SS")],
+                  "159928.SZ": [  # 消费
+                      ("洽洽食品","002557.SZ"),("涪陵榨菜","002507.SZ"),("劲仔食品","003000.SZ"),
+                      ("盐津铺子","002847.SZ"),("甘源食品","002991.SZ"),("绝味食品","603517.SS"),
+                      ("三只松鼠","300783.SZ"),("良品铺子","603719.SS"),("来伊份","603777.SS"),
+                      ("紫燕食品","603057.SS"),("千味央厨","001215.SZ"),("巴比食品","605338.SS")],
+                  "510230.SS": [  # 金融
+                      ("中泰证券","600918.SS"),("西部证券","002673.SZ"),("财达证券","600906.SS"),
+                      ("国联证券","601456.SS"),("南京证券","601990.SS"),("华林证券","002945.SZ"),
+                      ("苏农银行","603323.SS"),("瑞丰银行","601528.SS"),("无锡银行","600908.SS"),
+                      ("紫金银行","601860.SS"),("青岛银行","002948.SZ"),("厦门银行","601187.SS")],
+              }
+
+              # 取涨幅前5板块
+              valid = [(code, pct) for (_, code, _, pct, _) in etf_rows if pct is not None]
+              valid.sort(key=lambda x: x[1], reverse=True)
+              top_codes = [code for code, _ in valid[:5]]
+
+              result = []
+              for code in top_codes:
+                  stocks = midcap_stocks.get(code, [])
+                  sector_name = next((s for s,c,*_ in etf_rows if c==code), code)
+                  if not stocks:
+                      continue
+                  candidates = []
+                  for name, scode in stocks:
+                      try:
+                          hist = yf.Ticker(scode).history(period="5d").dropna(subset=["Close"])
+                          if len(hist) < 2:
+                              continue
+                          prev, last = hist["Close"].iloc[-2], hist["Close"].iloc[-1]
+                          vol_hist = yf.Ticker(scode).history(period="10d").dropna(subset=["Volume"])
+                          avg_vol = vol_hist["Volume"].iloc[:-1].mean() if len(vol_hist) > 1 else 0
+                          cur_vol = vol_hist["Volume"].iloc[-1] if len(vol_hist) > 0 else 0
+                          vol_ratio = cur_vol / avg_vol if avg_vol > 0 else 1
+                          pct = (last - prev) / prev * 100
+                          candidates.append((name, scode, last, pct, vol_ratio))
+                      except:
+                          continue
+                  candidates.sort(key=lambda x: x[3], reverse=True)
+                  if candidates:
+                      result.append(f"【{sector_name} · 中盘股100-500亿】")
+                      for name, scode, last, pct, vol_ratio in candidates[:5]:
+                          arrow = "▲" if pct > 0 else "▼"
+                          vol_tag = f" 量比{vol_ratio:.1f}x" if vol_ratio >= 1.0 else ""
+                          result.append(f"  {name}({scode}): {last:.2f}  {arrow}{abs(pct):.2f}%{vol_tag}")
+
+              log("中盘强势股", f"筛选完成")
+              return result if result else ["中盘强势股暂无数据"], midcap_stocks
+
+          # ===== 6c. 涨停后高位整理股票筛选 =====
+          def find_limit_up_stocks(top_sectors_stocks, midcap_stocks, etf_rows):
+              # 合并所有股票池（去重）
+              all_stocks = {}
+              valid = [(code, pct) for (_, code, _, pct, _) in etf_rows if pct is not None]
+              valid.sort(key=lambda x: x[1], reverse=True)
+              top_codes = [code for code, _ in valid[:5]]
+              for code in top_codes:
+                  for name, scode in top_sectors_stocks.get(code, []):
+                      all_stocks[scode] = name
+                  for name, scode in midcap_stocks.get(code, []):
+                      all_stocks[scode] = name
+
+              log("涨停筛选", f"扫描股票池共{len(all_stocks)}只")
+              results = []
+              for scode, name in all_stocks.items():
+                  try:
+                      hist = yf.Ticker(scode).history(period="20d").dropna(subset=["Close","Open"])
+                      if len(hist) < 5:
+                          continue
+                      # 只看最近15个交易日
+                      hist = hist.tail(15)
+                      closes = hist["Close"].values
+                      opens  = hist["Open"].values
+                      dates  = hist.index
+
+                      # 找前10个交易日内的涨停（涨幅>=9.8%）
+                      limit_idx = None
+                      for i in range(len(hist) - 2, max(len(hist) - 12, -1), -1):
+                          if i < 1:
+                              continue
+                          pct_chg = (closes[i] - closes[i-1]) / closes[i-1] * 100
+                          if pct_chg >= 9.8:
+                              limit_idx = i
+                              break
+
+                      if limit_idx is None:
+                          continue
+
+                      # 涨停后每天开盘价不低于涨停当日开盘价
+                      limit_open = opens[limit_idx]
+                      hold = True
+                      for j in range(limit_idx + 1, len(hist)):
+                          if opens[j] < limit_open * 0.995:  # 允许0.5%误差
+                              hold = False
+                              break
+
+                      if not hold:
+                          continue
+
+                      # 计算当前涨跌幅和量比
+                      last  = closes[-1]
+                      prev  = closes[-2]
+                      pct   = (last - prev) / prev * 100
+                      vol_hist = yf.Ticker(scode).history(period="15d").dropna(subset=["Volume"])
+                      avg_vol  = vol_hist["Volume"].iloc[:-1].mean() if len(vol_hist) > 1 else 0
+                      cur_vol  = vol_hist["Volume"].iloc[-1] if len(vol_hist) > 0 else 0
+                      vol_ratio = cur_vol / avg_vol if avg_vol > 0 else 1
+
+                      limit_date = dates[limit_idx].strftime("%m/%d")
+                      days_since = len(hist) - 1 - limit_idx
+                      arrow = "▲" if pct > 0 else ("▼" if pct < 0 else "—")
+                      results.append((name, scode, last, pct, vol_ratio, limit_date, days_since))
+
+                  except:
+                      continue
+
+              results.sort(key=lambda x: x[3], reverse=True)
+              output = []
+              if results:
+                  for name, scode, last, pct, vol_ratio, limit_date, days_since in results:
+                      arrow = "▲" if pct > 0 else ("▼" if pct < 0 else "—")
+                      vol_tag = f" 量比{vol_ratio:.1f}x" if vol_ratio >= 1.0 else ""
+                      output.append(
+                          f"  {name}({scode}): {last:.2f}  {arrow}{abs(pct):.2f}%{vol_tag}"
+                          f"  [涨停:{limit_date} {days_since}天前]"
+                      )
+              else:
+                  output = ["暂无符合条件的股票"]
+              log("涨停筛选", f"找到{len(results)}只符合条件的股票")
+              return output
+
+          # ===== 7. Gemini AI报告 =====
+          def ai_report(data_text):
+              api_key = os.environ["GEMINI_API_KEY"]
+              try:
+                  r0 = requests.get(f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}", timeout=10)
+                  models = r0.json().get("models", [])
+                  usable = [m["name"].split("/")[1] for m in models
+                            if "generateContent" in m.get("supportedGenerationMethods", [])
+                            and "flash" in m["name"]]
+                  model_name = usable[0] if usable else "gemini-2.0-flash"
+                  log("Gemini", f"使用模型: {model_name}")
+              except Exception as e:
+                  model_name = "gemini-2.0-flash"
+                  log("Gemini", f"模型查询失败: {e}")
+
+              url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={api_key}"
+              system_instruction = (
+                  "你是资深券商策略首席分析师。"
+                  "报告必须100%基于提供的真实数据和具体数值。"
+                  "若数据标注失败或暂无则跳过，禁止任何模板化描述。"
+              )
+              prompt = f"""以下是今日完整市场数据，请生成专业投资策略报告：
+
+          {data_text}
+
+          报告结构（每节必须引用上方具体数字和股票名称）：
+
+          【一、全球市场与宏观风险】
+          结合美股科技股涨跌数据和宏观日历事件，分析当前全球市场情绪和近期宏观风险点。
+
+          【二、A股板块轮动分析】
+          重点分析涨幅前5和跌幅前5的板块，说明资金流向逻辑，引用具体板块名称和涨跌幅数值。
+
+          【三、强势标的精选】
+          结合强势股筛选结果，点评量比较大或涨幅突出的个股，说明其所在板块逻辑和关注理由。
+
+          【四、新闻驱动分析】
+          结合今日财经新闻，分析哪些新闻可能对明日A股产生影响，指出受益或受损的板块。
+
+          【五、风险提示】
+          结合宏观事件日历和跌幅较大板块，提示近期需要规避的方向和时间节点。
+
+          【六、明日操作策略】
+          给出明日重点关注的板块和个股候选，说明进场逻辑，必须有数据支撑，约1000字总计。"""
+
+              payload = {
+                  "system_instruction": {"parts": [{"text": system_instruction}]},
+                  "contents": [{"parts": [{"text": prompt}]}],
+                  "generationConfig": {"temperature": 0.3, "maxOutputTokens": 8192}
+              }
+              for attempt in range(3):
+                  r = requests.post(url, json=payload, timeout=60)
+                  if r.status_code == 429:
+                      wait = 30 * (attempt + 1)
+                      log("Gemini", f"429限速，等待{wait}秒重试")
+                      time.sleep(wait)
+                      continue
+                  r.raise_for_status()
+                  text = r.json()["candidates"][0]["content"]["parts"][0]["text"]
+                  log("Gemini", "报告生成成功")
+                  return text
+              raise Exception("Gemini重试3次失败")
+
+          # ===== 8. HTML邮件 =====
+          def to_html(data_text, report):
+              rows = ""
+              for line in data_text.split("\n"):
+                  line = line.strip()
+                  if not line:
+                      continue
+                  if line.startswith("====="):
+                      section = line.replace("=","").strip()
+                      rows += (f"<h3 style='color:#c0392b;margin:16px 0 6px;font-size:15px;"
+                               f"border-left:3px solid #c0392b;padding-left:8px;'>{section}</h3>")
+                  elif line.startswith("【") and line.endswith("】"):
+                      rows += (f"<p style='margin:8px 0 2px;font-size:13px;font-weight:bold;"
+                               f"color:#555;'>{line}</p>")
+                  else:
+                      has_up = "▲" in line
+                      has_dn = "▼" in line
+                      color = "#c0392b" if has_up else ("#27ae60" if has_dn else "#333")
+                      rows += (f"<p style='margin:2px 0;font-size:13px;color:{color};"
+                               f"font-family:monospace;'>{line}</p>")
+              rhtml = report.replace("\n\n","</p><p style='margin:10px 0;'>").replace("\n","<br>")
+              rhtml = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", rhtml)
+              rhtml = f"<p style='margin:10px 0;'>{rhtml}</p>"
+              return (
+                  "<!DOCTYPE html><html><head>"
+                  "<meta charset='utf-8'>"
+                  "<meta name='viewport' content='width=device-width,initial-scale=1.0'>"
+                  "</head>"
+                  "<body style='font-family:-apple-system,BlinkMacSystemFont,sans-serif;"
+                  "max-width:640px;margin:0 auto;padding:16px;background:#f0f2f5;'>"
+                  "<div style='background:#fff;border-radius:12px;padding:20px;"
+                  "box-shadow:0 2px 8px rgba(0,0,0,0.08);'>"
+                  "<h1 style='font-size:20px;color:#1a1a1a;border-bottom:3px solid #c0392b;"
+                  "padding-bottom:10px;margin-top:0;'>📊 AI量化投资日报</h1>"
+                  "<div style='background:#fafafa;border-radius:8px;padding:14px;"
+                  "margin-bottom:16px;'>"
+                  f"{rows}"
+                  "</div>"
+                  "<h2 style='font-size:17px;color:#c0392b;margin-bottom:12px;'>📝 AI策略报告</h2>"
+                  "<div style='line-height:1.8;color:#222;font-size:15px;'>"
+                  f"{rhtml}"
+                  "</div>"
+                  "<div style='font-size:12px;color:#999;border-top:1px solid #eee;"
+                  "margin-top:20px;padding-top:10px;'>"
+                  "本报告由AI基于实时数据自动生成，不构成投资建议。</div>"
+                  "</div></body></html>"
+              )
+
+          def send_mail(subject, data_text, report):
+              sender = os.environ["EMAIL_USER"]
+              password = os.environ["EMAIL_PASS"]
+              msg = MIMEMultipart("alternative")
+              msg["Subject"] = subject
+              msg["From"] = sender
+              msg["To"] = sender
+              msg.attach(MIMEText(f"{data_text}\n\n{report}", "plain", "utf-8"))
+              msg.attach(MIMEText(to_html(data_text, report), "html", "utf-8"))
+              with smtplib.SMTP_SSL("smtp.qq.com", 465) as s:
+                  s.login(sender, password)
+                  s.sendmail(sender, sender, msg.as_string())
+              log("邮件", "发送成功")
+
+          # ===== 6d. 明日打板候选（涨停+热门板块+质量过滤）=====
+          def find_tomorrow_candidates(etf_rows, top_sectors_stocks, midcap_stocks):
+              """
+              筛选逻辑：
+              1. 今日涨停（涨幅>=9.8%）
+              2. 属于热门板块（板块ETF今日涨幅>=1%）
+              3. 板块内涨停股>=2只（热门板块验证）
+              4. 连续涨停<=3天（避免追高）
+              5. 非ST股
+              次日策略：高开>=2%确认动能后介入，跌破涨停价止损
+              """
+              all_stocks = {}
+              for code_dict in [top_sectors_stocks, midcap_stocks]:
+                  for etf_code, stocks in code_dict.items():
+                      for name, scode in stocks:
+                          all_stocks[scode] = (name, etf_code)
+
+              hot_sectors = set()
+              for sector, code, last, pct, d in etf_rows:
+                  if pct is not None and pct >= 1.0:
+                      hot_sectors.add(code)
+              log("打板候选", f"热门板块{len(hot_sectors)}个，扫描{len(all_stocks)}只股票")
+
+              limit_up_today = []
+              sector_limit_count = {}
+
+              for scode, (name, etf_code) in all_stocks.items():
+                  if "ST" in name or "st" in name:
+                      continue
+                  if etf_code not in hot_sectors:
+                      continue
+                  try:
+                      hist = yf.Ticker(scode).history(period="20d").dropna(subset=["Close","Volume"])
+                      if len(hist) < 5:
+                          continue
+                      closes = hist["Close"].values
+                      today_pct = (closes[-1] - closes[-2]) / closes[-2] * 100
+                      if today_pct < 9.8:
+                          continue
+                      # 连续涨停天数
+                      consec = 1
+                      for i in range(len(closes)-2, max(len(closes)-5, 0), -1):
+                          if i < 1:
+                              break
+                          if (closes[i] - closes[i-1]) / closes[i-1] * 100 >= 9.8:
+                              consec += 1
+                          else:
+                              break
+                      if consec > 3:
+                          continue
+                      avg_vol = hist["Volume"].iloc[-6:-1].mean()
+                      cur_vol = hist["Volume"].iloc[-1]
+                      vol_ratio = cur_vol / avg_vol if avg_vol > 0 else 1
+                      score = vol_ratio * (4 - consec)
+                      limit_up_today.append((name, scode, etf_code, closes[-1], consec, vol_ratio, score))
+                      sector_limit_count[etf_code] = sector_limit_count.get(etf_code, 0) + 1
+                  except:
+                      continue
+
+              # 热门板块验证：板块内>=2只涨停
+              qualified = [s for s in limit_up_today if sector_limit_count.get(s[2], 0) >= 2]
+              if not qualified:
+                  qualified = limit_up_today  # 放宽条件
+              qualified.sort(key=lambda x: x[6], reverse=True)
+
+              result = []
+              if qualified:
+                  result.append(f"共{len(qualified)}只候选 | 次日高开>=2%介入 | 跌破涨停价止损")
+                  result.append("优先级：首板>2连板>3连板，量比越大越好，🔥=热门板块验证")
+                  for name, scode, etf_code, close, consec, vol_ratio, score in qualified[:10]:
+                      sector_name = next((s for s,c,*_ in etf_rows if c==etf_code), etf_code)
+                      consec_tag = "首板" if consec == 1 else f"{consec}连板"
+                      hot_tag = "🔥" if sector_limit_count.get(etf_code, 0) >= 2 else "  "
+                      result.append(
+                          f"  {hot_tag}{name}({scode}): {close:.2f}"
+                          f"  [{consec_tag}]  量比{vol_ratio:.1f}x  [{sector_name}]"
+                      )
+              else:
+                  result = ["今日股票池内暂无涨停候选"]
+
+              log("打板候选", f"筛出{len(qualified)}只")
+              return result
+
+          # ===== 主程序 =====
+          def main():
+              now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+              log("启动", now)
+
+              us      = us_tech_stocks()
+              sector_result, etf_rows = sector_etf()
+              strong, top_sectors_stocks, top_codes = strong_stocks(etf_rows)
+              midcap_result, midcap_stocks = midcap_strong_stocks(etf_rows)
+              midcap = midcap_result
+              limit_up    = find_limit_up_stocks(top_sectors_stocks, midcap_stocks, etf_rows)
+              candidates  = find_tomorrow_candidates(etf_rows, top_sectors_stocks, midcap_stocks)
+              news        = fetch_news()
+              macro   = macro_calendar()
+
+              data_text = "\n".join(
+                  ["===== A股板块ETF（按涨跌幅排序）====="]+sector_result+
+                  ["\n===== 强势股筛选（涨幅前5板块龙头）====="]+strong+
+                  ["\n===== 中盘强势股（100-500亿，各板块涨幅前5）====="]+midcap+
+                  ["\n===== 涨停后高位整理（前10日涨停，开盘未破涨停开盘价）====="]+limit_up+
+                  ["\n===== 明日打板候选（涨停+热门板块验证+质量过滤）====="]+candidates+
+                  ["\n===== 美股科技股 ====="]+us+
+                  ["\n===== 今日财经新闻 ====="]+news+
+                  ["\n===== 宏观事件日历 ====="]+macro
+              )
+              log("数据汇总", f"\n{data_text}")
+              report = ai_report(data_text)
+              subject = f"AI量化投资日报 {now[:10]}"
+              send_mail(subject, data_text, report)
+
+          main()
+          PYEOF
+
+      - name: Save records
+        run: |
+          if [ -f limit_up_records.json ]; then
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git add limit_up_records.json
+            git diff --cached --quiet || git commit -m "Update limit_up_records [skip ci]"
+            git push
+          fi
