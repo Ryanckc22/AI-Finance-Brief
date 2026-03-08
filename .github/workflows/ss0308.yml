@@ -600,7 +600,7 @@ jobs:
               log("中盘强势股", f"筛选完成")
               global midcap_stocks_global
               midcap_stocks_global = midcap_stocks
-              return result if result else ["中盘强势股暂无数据"], midcap_stocks
+              return (result if result else ["中盘强势股暂无数据"]), midcap_stocks
 
           # ===== 大盘股票池 =====
           def build_stock_pool():
