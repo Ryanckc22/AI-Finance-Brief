@@ -1,8 +1,6 @@
-name: A股涨停整理扫描
+name: A股涨停扫描测试
 
 on:
-  schedule:
-    - cron: '30 7 * * 1-5'   # 北京时间15:30
   workflow_dispatch:
 
 jobs:
@@ -28,13 +26,13 @@ jobs:
 
           import akshare as ak
           import yfinance as yf
-          from concurrent.futures import ThreadPoolExecutor, as_completed
-          import smtplib,os,datetime
+          import datetime,os,smtplib
+          from concurrent.futures import ThreadPoolExecutor,as_completed
           from email.mime.text import MIMEText
 
           print("获取A股列表...")
 
-          df = ak.stock_info_a_code_name()
+          df=ak.stock_info_a_code_name()
 
           stocks=[]
 
@@ -43,6 +41,7 @@ jobs:
               code=str(row["code"]).zfill(6)
               name=row["name"]
 
+              # 过滤ST
               if "ST" in name or "st" in name:
                   continue
 
@@ -62,39 +61,22 @@ jobs:
 
               try:
 
-                  hist=yf.Ticker(ticker).history(period="3mo")
+                  hist=yf.Ticker(ticker).history(period="5d")
 
+                  if len(hist)<2:
+                      return None
+
+                  # 次新股过滤
                   if len(hist)<60:
                       return None
 
-                  hist=hist.tail(15)
-
                   close=hist["Close"].values
-                  openp=hist["Open"].values
 
-                  n=len(close)
+                  pct=(close[-1]-close[-2])/close[-2]*100
 
-                  first_limit=None
-
-                  for i in range(max(n-11,1),n-1):
-
-                      pct=(close[i]-close[i-1])/close[i-1]*100
-
-                      if pct>=9.5:
-                          first_limit=i
-                          break
-
-                  if first_limit is None:
-                      return None
-
-                  base_open=openp[first_limit]
-
-                  for j in range(first_limit+1,n):
-
-                      if close[j]<base_open:
-                          return None
-
-                  return ticker+" "+name
+                  # 主板涨停近似判断
+                  if pct>=9.8:
+                      return ticker+" "+name+" "+str(round(pct,2))+"%"
 
               except:
                   return None
@@ -104,7 +86,7 @@ jobs:
 
           results=[]
 
-          with ThreadPoolExecutor(max_workers=20) as exe:
+          with ThreadPoolExecutor(max_workers=30) as exe:
 
               futures=[exe.submit(check_stock,s) for s in stocks]
 
@@ -116,19 +98,18 @@ jobs:
                       results.append(r)
 
 
-          print("符合条件:",len(results))
+          print("涨停股票:",len(results))
 
 
           now=datetime.datetime.now().strftime("%Y-%m-%d")
 
-          text="A股涨停整理扫描 "+now+"\n\n"
+          text="A股今日涨停股票 "+now+"\n\n"
 
           if len(results)==0:
-              text+="今日没有符合条件股票"
+              text+="没有检测到涨停股票"
           else:
               for r in results:
                   text+=r+"\n"
-
 
           print(text)
 
@@ -138,7 +119,7 @@ jobs:
 
           msg=MIMEText(text,"plain","utf-8")
 
-          msg["Subject"]="A股涨停整理扫描 "+now
+          msg["Subject"]="A股涨停扫描 "+now
           msg["From"]=sender
           msg["To"]=sender
 
