@@ -15,7 +15,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install akshare yfinance pandas
+        run: pip install akshare yfinance
 
       - name: Run scanner
         env:
@@ -24,49 +24,68 @@ jobs:
         run: |
           python - << 'PYEOF'
 
-          import akshare as ak
           import yfinance as yf
+          import akshare as ak
           import datetime,os,smtplib
-          from concurrent.futures import ThreadPoolExecutor,as_completed
           from email.mime.text import MIMEText
+          from concurrent.futures import ThreadPoolExecutor,as_completed
 
-          print("获取A股列表...")
+          print("生成股票池...")
 
-          df=ak.stock_info_a_code_name()
+          pool=[]
 
-          stocks=[]
+          # 上交所
+          for i in range(600000,604000):
+              pool.append(f"{i}.SS")
 
-          for _,row in df.iterrows():
+          # 深交所
+          for i in range(1,4000):
+              pool.append(f"{i:06d}.SZ")
 
-              code=str(row["code"]).zfill(6)
-              name=row["name"]
+          # 创业板
+          for i in range(300000,302000):
+              pool.append(f"{i}.SZ")
 
-              # 过滤ST
-              if "ST" in name or "st" in name:
-                  continue
+          # 科创板
+          for i in range(688000,689000):
+              pool.append(f"{i}.SS")
 
-              if code.startswith("6"):
-                  ticker=code+".SS"
-              else:
-                  ticker=code+".SZ"
-
-              stocks.append((ticker,name))
-
-          print("股票数量:",len(stocks))
+          print("候选股票数量:",len(pool))
 
 
-          def check_stock(item):
+          print("获取ST名单...")
 
-              ticker,name=item
+          st_set=set()
+
+          try:
+
+              df=ak.stock_info_a_code_name()
+
+              for _,row in df.iterrows():
+
+                  if "ST" in row["name"] or "st" in row["name"]:
+
+                      code=str(row["code"]).zfill(6)
+
+                      st_set.add(code+".SS")
+                      st_set.add(code+".SZ")
+
+              print("ST数量:",len(st_set))
+
+          except:
+
+              print("ST获取失败，跳过ST过滤")
+
+
+          def check_stock(code):
 
               try:
 
-                  hist=yf.Ticker(ticker).history(period="5d")
-
-                  if len(hist)<2:
+                  if code in st_set:
                       return None
 
-                  # 次新股过滤
+                  hist=yf.Ticker(code).history(period="3mo")
+
                   if len(hist)<60:
                       return None
 
@@ -74,9 +93,9 @@ jobs:
 
                   pct=(close[-1]-close[-2])/close[-2]*100
 
-                  # 主板涨停近似判断
                   if pct>=9.8:
-                      return ticker+" "+name+" "+str(round(pct,2))+"%"
+
+                      return f"{code} {pct:.2f}%"
 
               except:
                   return None
@@ -88,7 +107,7 @@ jobs:
 
           with ThreadPoolExecutor(max_workers=30) as exe:
 
-              futures=[exe.submit(check_stock,s) for s in stocks]
+              futures=[exe.submit(check_stock,s) for s in pool]
 
               for f in as_completed(futures):
 
@@ -106,10 +125,14 @@ jobs:
           text="A股今日涨停股票 "+now+"\n\n"
 
           if len(results)==0:
+
               text+="没有检测到涨停股票"
+
           else:
+
               for r in results:
                   text+=r+"\n"
+
 
           print(text)
 
