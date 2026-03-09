@@ -1,4 +1,4 @@
-name: AI Finance Daily
+name: AI Finance Daily ss0308.yml
 
 on:
   schedule:
@@ -1177,7 +1177,7 @@ jobs:
               )
               log("数据汇总", f"\n{data_text}")
               report = ai_report(data_text)
-              subject = f"AI量化投资日报 {now[:10]}"
+              subject = f"AI量化投资日报ss0308 {now[:10]}"
               send_mail(subject, data_text, report)
 
           main()
