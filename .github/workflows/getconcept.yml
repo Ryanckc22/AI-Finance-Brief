@@ -1,0 +1,23 @@
+name: 获取A股概念列表
+
+on:
+  workflow_dispatch:
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install akshare
+      - name: Fetch concept list
+        run: |
+          python - << 'PYEOF'
+          import akshare as ak
+
+          df = ak.stock_board_concept_name_em()
+          print(f"共 {len(df)} 个概念板块\n")
+          print(df.to_string(index=False))
+          PYEOF
