@@ -59,7 +59,7 @@ jobs:
               log("美股", f"获取{len([r for r in result if '失败' not in r])}条")
               return result
 
-          # ===== 3. A股板块ETF（按涨跌幅排序）=====
+          # ===== 2. A股板块ETF（按涨跌幅排序）=====
           def sector_etf():
               etfs = [
                   ("芯片/半导体",   "512480.SS"),
@@ -117,73 +117,7 @@ jobs:
               log("板块ETF", f"获取{len([r for r in rows if r[2] is not None])}条")
               return result, rows
 
-          # 板块新闻关键词映射
-          SECTOR_KEYWORDS = {
-              "512480.SS": "半导体 芯片",
-              "515070.SS": "人工智能 AI",
-              "562500.SS": "机器人 人形机器人",
-              "512720.SS": "计算机 软件",
-              "515050.SS": "5G 通信",
-              "516160.SS": "卫星 商业航天",
-              "512400.SS": "有色金属 铜 铝",
-              "159697.SZ": "石油 油气",
-              "516020.SS": "化工",
-              "515210.SS": "钢铁",
-              "515220.SS": "煤炭",
-              "516780.SS": "稀土",
-              "159611.SZ": "电网 电力设备",
-              "516950.SS": "工程机械",
-              "512660.SS": "军工 国防",
-              "515790.SS": "光伏 太阳能",
-              "515030.SS": "新能源车 电动车",
-              "512880.SS": "证券 股市",
-              "512800.SS": "银行",
-              "510880.SS": "红利 分红",
-              "510720.SS": "央企 国企",
-              "510300.SS": "沪深300",
-              "510500.SS": "中证500",
-              "512100.SS": "中证1000",
-              "588000.SS": "科创板",
-              "159949.SZ": "创业板",
-              "159915.SZ": "新能源",
-              "159929.SZ": "医药 生物",
-              "159928.SZ": "消费 白酒",
-              "510230.SS": "金融",
-          }
-
-          # ===== 4b. NewsAPI 板块新闻 =====
-          def fetch_sector_news(sector_code, sector_name):
-              api_key = os.environ.get("NEWS_API_KEY", "")
-              if not api_key:
-                  return []
-              keyword = SECTOR_KEYWORDS.get(sector_code, sector_name)
-              try:
-                  url = (f"https://newsapi.org/v2/everything"
-                         f"?q={requests.utils.quote(keyword)}"
-                         f"&language=zh"
-                         f"&sortBy=publishedAt"
-                         f"&pageSize=3"
-                         f"&apiKey={api_key}")
-                  r = requests.get(url, timeout=8)
-                  articles = r.json().get("articles", [])
-                  result = []
-                  for a in articles[:3]:
-                      title = a.get("title","").split(" - ")[0].strip()
-                      pub   = a.get("publishedAt","")[:16].replace("T"," ")
-                      try:
-                          import datetime as _dt
-                          dt = _dt.datetime.strptime(pub, "%Y-%m-%d %H:%M")
-                          dt_bj = dt + _dt.timedelta(hours=8)
-                          pub = dt_bj.strftime("%m/%d %H:%M")
-                      except:
-                          pass
-                      if title:
-                          result.append(f"  📰 [{pub}] {title}")
-                  return result
-              except:
-                  return []
-
-          # ===== 4. 强势股筛选（各强势板块前10大重仓股）=====
+          # ===== 3. 强势股筛选（各强势板块前10大重仓股）=====
           def strong_stocks(etf_rows):
               top_sectors_stocks = {
                   "512480.SS": [
@@ -286,7 +220,7 @@ jobs:
               checked = set()
               for code in top_codes:
                   stocks = top_sectors_stocks.get(code, [])
-                  sector_name = next((s for s,c,*_ in [r for r in etf_rows] if c==code), code)
+                  sector_name = next((s for s,c,*_ in etf_rows if c==code), code)
                   strong = []
                   for name, scode in stocks:
                       if scode in checked:
@@ -314,7 +248,7 @@ jobs:
                           result.append(f"  {name}({scode}): {last:.2f}  {arrow}{abs(pct):.2f}%{vol_tag}")
 
               if not result:
-                  return ["强势股数据获取中..."]
+                  return ["强势股数据获取中..."], top_sectors_stocks, top_codes
               log("强势股", f"筛选完成，共{len([r for r in result if '【' not in r])}只")
               global top_sectors_stocks_global
               top_sectors_stocks_global = top_sectors_stocks
@@ -425,9 +359,9 @@ jobs:
                       ("国投电力","600886.SS"),("浙能电力","600642.SS"),("内蒙华电","600863.SS")],
                   "510720.SS": [
                       ("中国铁路","601117.SS"),("中国电气","601949.SS"),("中国核电","601985.SS"),
-                      ("中国广核","003816.SZ"),("华润电力","836.HK"),("大唐集团","601991.SS"),
-                      ("国家能源","600655.SS"),("中国电建","601669.SS"),("葛洲坝","600068.SS"),
-                      ("中国化学","601117.SS"),("中材国际","600970.SS"),("中国交建","601800.SS")],
+                      ("中国广核","003816.SZ"),("大唐集团","601991.SS"),
+                      ("中国电建","601669.SS"),("葛洲坝","600068.SS"),
+                      ("中材国际","600970.SS"),("中国交建","601800.SS")],
                   "510300.SS": [
                       ("三花智控","002050.SZ"),("华润三九","000999.SZ"),("华东医药","000963.SZ"),
                       ("国投资本","600061.SS"),("中国电影","002739.SZ"),("传化智联","002010.SZ"),
@@ -485,7 +419,7 @@ jobs:
                   sector_name = next((s for s,c,*_ in etf_rows if c==code), code)
                   if not stocks:
                       continue
-                  candidates = []
+                  candidates_list = []
                   for name, scode in stocks:
                       try:
                           hist = yf.Ticker(scode).history(period="5d").dropna(subset=["Close"])
@@ -497,18 +431,18 @@ jobs:
                           cur_vol = vol_hist["Volume"].iloc[-1] if len(vol_hist) > 0 else 0
                           vol_ratio = cur_vol / avg_vol if avg_vol > 0 else 1
                           pct = (last - prev) / prev * 100
-                          candidates.append((name, scode, last, pct, vol_ratio))
+                          candidates_list.append((name, scode, last, pct, vol_ratio))
                       except:
                           continue
-                  candidates.sort(key=lambda x: x[3], reverse=True)
-                  if candidates:
+                  candidates_list.sort(key=lambda x: x[3], reverse=True)
+                  if candidates_list:
                       result.append(f"【{sector_name} · 中盘股100-500亿】")
-                      for name, scode, last, pct, vol_ratio in candidates[:5]:
+                      for name, scode, last, pct, vol_ratio in candidates_list[:5]:
                           arrow = "▲" if pct > 0 else "▼"
                           vol_tag = f" 量比{vol_ratio:.1f}x" if vol_ratio >= 1.0 else ""
                           result.append(f"  {name}({scode}): {last:.2f}  {arrow}{abs(pct):.2f}%{vol_tag}")
 
-              log("中盘强势股", f"筛选完成")
+              log("中盘强势股", "筛选完成")
               global midcap_stocks_global
               midcap_stocks_global = midcap_stocks
               return (result if result else ["中盘强势股暂无数据"]), midcap_stocks
@@ -521,14 +455,12 @@ jobs:
 
               delisted = {'301064.SZ','603250.SS','688587.SS','688340.SS'}
               pool = set()
-
               import akshare as ak
 
               try:
                   df = ak.stock_info_a_code_name()
                   df = df[~df["name"].str.contains("ST|st", na=False)]
-                  codes_all = df["code"].tolist()
-                  for c in codes_all:
+                  for c in df["code"].tolist():
                       yf_code = to_yf(str(c))
                       if yf_code not in delisted:
                           pool.add(yf_code)
@@ -566,32 +498,30 @@ jobs:
                       "002223,002409,600489,000708,002008,600332,002572,600547,000786,600188,"
                       "002043,600867,002202,600886,002239,600415,601021,601319,600050,600018,"
                       "601006,600163,002631,000778,600026,601872,001696,002035,600015,600019,"
-                      "000932,600282,601003,600507,601100,600660,002601,000538,600150,002007,"
-                      "002463,605388,603501,300308,688981,300502,300394,002756,603799,300769,"
-                      "688005,002850,688772,688116,688388,300751,300724,688516,688598,603185,"
-                      "688556,002709,300037,301238,002865,300776,688032,688390,605117,002557,"
-                      "002507,003000,002847,002991,603517,300783,603719,603777,603057,300379,"
-                      "600845,300687,600718,002212,688023,300454,688561,688225,003029,300579,"
-                      "002439,300369,300768,300311,688168,603236,300638,688159,002313,603118,"
-                      "300098,688418,300620,000988,603083,002792,002747,688017,002050,603728,"
-                      "002895,002821,300363,603456,000739,603520,300702,603229,002940,002332,"
-                      "603538,300636,600216,002371,002508,300661,002032,300408,688050,688111,"
-                      "688041,603019,300496,002984,300761,688396,300866,300529,600163,002631,"
-                      "000778,600026,601872,001696,002035,600015,000932,600282,601003,600507,"
-                      "002318,603995,603878,688186,600399,002465,600879,001270,603966,688523,"
-                      "300627,002151,300101,300342,002402,000831,600392,600549,002056,600366,"
-                      "300224,300748,688077,300127,000969,600206,600259,002167,002028,002364,"
-                      "603070,688517,688100,300682,000682,603050,300360,002339,300490,300286,"
-                      "600968,600871,600256,002207,002353,601808,688319,603181,605006,688550,"
-                      "002409,300054,688378,300576,300429,603650,688357,600378,002250,603323,"
-                      "601528,600908,601860,002966,002948,600928,601187,601963,601997,601665,"
-                      "001227,000400,600312,600406,002916,002081,000977,002223,000629,002409,"
-                      "688521,688536,688052,688381,688110,688368,688595,688608,688195,688060,"
-                      "688385,688153,300418,688327,688207,688088,688787,300229,002362,688322,"
-                      "688552,300182,688686,688261,688099,688508,688213,688728,688458,688141,"
-                      "688484,688173,300671,688160,002472,002896,603915,000837,300161,688188,"
-                      "688305,300083,002095,002334,002979,603638,603338,301027,688707,600984,"
-                      "300201,000680,688206,688333,688234,300045,688066,600118,688270,601698,"
+                      "000932,600282,601003,600507,002463,605388,603501,300308,688981,300502,"
+                      "300394,002756,603799,300769,688005,002850,688772,688116,688388,300751,"
+                      "300724,688516,688598,603185,688556,002709,300037,301238,002865,300776,"
+                      "688032,688390,605117,002557,002507,003000,002847,002991,603517,300783,"
+                      "603719,603777,603057,300379,600845,300687,600718,002212,688023,300454,"
+                      "688561,688225,003029,300579,002439,300369,300768,300311,688168,603236,"
+                      "300638,688159,002313,603118,300098,688418,300620,000988,603083,002792,"
+                      "002747,688017,002050,603728,002895,002821,300363,603456,000739,603520,"
+                      "300702,603229,002940,002332,603538,300636,600216,002371,002508,300661,"
+                      "002032,300408,688050,688111,688041,603019,300496,002984,300761,688396,"
+                      "300866,300529,002318,603995,603878,688186,600399,002465,600879,001270,"
+                      "603966,688523,300627,002151,300101,300342,002402,000831,600392,600549,"
+                      "002056,600366,300224,300748,688077,300127,000969,600206,600259,002167,"
+                      "002028,002364,603070,688517,688100,300682,000682,603050,300360,002339,"
+                      "300490,300286,600968,600871,600256,002207,002353,601808,688319,603181,"
+                      "605006,688550,300054,688378,300576,300429,603650,688357,600378,002250,"
+                      "603323,601528,600908,601860,002966,002948,600928,601187,601963,601997,"
+                      "601665,001227,000400,600312,600406,688521,688536,688052,688381,688110,"
+                      "688368,688595,688608,688195,688060,688385,688153,300418,688327,688207,"
+                      "688088,688787,300229,002362,688322,688552,300182,688686,688261,688099,"
+                      "688508,688213,688728,688458,688141,688484,688173,300671,688160,002472,"
+                      "002896,603915,000837,300161,688188,688305,300083,002095,002334,002979,"
+                      "603638,603338,301027,688707,600984,300201,000680,688206,688333,688234,"
+                      "300045,688066,600118,688270,601698,"
                   )
                   for code in builtin.split(','):
                       code = code.strip()
@@ -604,22 +534,35 @@ jobs:
               log("股票池", f"最终股票池{len(result)}只")
               return result
 
-          # ===== 6c. 涨停后高位整理（3-21元，按ETF行业分类排列）+ 6d. 明日打板候选 =====
+          # ===== 辅助：ETF板块兜底猜测 =====
+          def _guess_etf_by_code(scode):
+              code = scode.replace(".SS", "").replace(".SZ", "")
+              if code.startswith("688"):
+                  return "588000.SS"   # 科创50
+              if code.startswith("300"):
+                  return "159949.SZ"   # 创业板50
+              return "510300.SS"       # 默认沪深300
+
+          # ===== 5. 涨停后高位整理 + 明日打板候选 =====
           def scan_large_pool(etf_rows):
               """
-              扫描全A股票池（约1800只），找出：
-              A. 涨停后高位整理：前10日内有涨停，之后每日开盘不破涨停当日开盘价
-                 - 仅保留价格 3-21 元的股票
-                 - 按ETF板块今日涨跌幅降序排列，板块内按个股涨幅降序
-              B. 明日打板候选：今日涨停+热门板块+连板<=3+板块内>=2只涨停
-              过滤：非ST，非次新股（上市 > 60个交易日，约3个月）
+              高位整理逻辑：
+              ① 取最近25个交易日数据
+              ② 在【昨天往前数，最多找到10个交易日前】的范围内，找最近一次涨停（>=9.5%）
+                 - 即涨停发生在 1-10 个交易日之前（今日涨停=0天前不算整理期；超过10天视为过期）
+              ③ 涨停日之后到今日，每日收盘价均 >= 涨停日收盘价 × 95%（整理幅度不超过5%）
+              ④ 今日收盘价在 3-30 元之间
+              ⑤ 非ST，非次新股（上市 > 60个交易日）
+
+              打板候选逻辑：
+              - 今日涨停（>=9.5%）+ 热门板块（ETF涨>=1%）+ 连板<=3 + 板块内>=2只涨停
               """
               from concurrent.futures import ThreadPoolExecutor, as_completed
               from collections import defaultdict
 
               scan_pool = build_stock_pool()
 
-              # ETF板块涨跌幅字典：etf_code -> (sector_name, pct)
+              # ETF板块涨跌幅字典
               etf_pct_map = {}
               for sector, code, last, pct, d in etf_rows:
                   if pct is not None:
@@ -627,8 +570,7 @@ jobs:
 
               hot_sectors = {code for code, (_, pct) in etf_pct_map.items() if pct >= 1.0}
 
-              # 构建 股票代码 -> etf_code 映射（覆盖top+midcap两层字典）
-              # 同一只股票映射多个ETF时，优先取今日涨幅最高的板块
+              # 股票 -> ETF板块映射（优先取今日涨幅最高的板块）
               stock_to_etf = {}
               for code_dict in [top_sectors_stocks_global, midcap_stocks_global]:
                   for etf_code, stocks in code_dict.items():
@@ -641,7 +583,7 @@ jobs:
                               if new_pct > old_pct:
                                   stock_to_etf[scode] = etf_code
 
-              # 股票代码 -> 名称映射
+              # 股票代码 -> 名称
               stock_names = {}
               try:
                   import akshare as _ak
@@ -659,49 +601,52 @@ jobs:
 
               def check_stock(scode):
                   try:
-                      # 3个月数据，约60个交易日，次新股判断阈值改为60天
                       hist_full = yf.Ticker(scode).history(period="3mo").dropna(
                           subset=["Close", "Open", "Volume"])
-                      # 过滤次新股：上市不足60个交易日跳过
+                      # 过滤次新股：上市不足60个交易日
                       if len(hist_full) < 60:
                           return None
+                      # 取最近25个交易日
                       hist = hist_full.tail(25)
-                      if len(hist) < 10:
+                      if len(hist) < 12:
                           return None
+
                       closes = hist["Close"].values
-                      opens  = hist["Open"].values
                       vols   = hist["Volume"].values
                       dates  = hist.index
 
                       today_close = closes[-1]
                       today_pct   = (closes[-1] - closes[-2]) / closes[-2] * 100
 
-                      # ===== A. 高位整理判断（价格必须 3-21 元）=====
+                      # ===== A. 高位整理判断 =====
                       hold_result = None
-                      if 3.0 <= today_close <= 21.0:
+                      if 3.0 <= today_close <= 30.0:
+                          # 搜索范围：昨天(index -2) 到 10天前(index -11)
+                          # closes[-1]=今日, closes[-2]=昨日, closes[-11]=10天前
+                          n = len(closes)
                           limit_idx = None
-                          for i in range(len(closes) - 2, max(len(closes) - 12, 0), -1):
-                              if i < 1:
-                                  break
-                              if (closes[i] - closes[i - 1]) / closes[i - 1] * 100 >= 9.8:
+                          # i 从 n-2（昨天）往前找，最远到 n-11（10天前）
+                          for i in range(n - 2, max(n - 12, 1) - 1, -1):
+                              if (closes[i] - closes[i - 1]) / closes[i - 1] * 100 >= 9.5:
                                   limit_idx = i
                                   break
+
                           if limit_idx is not None:
-                              limit_open = opens[limit_idx]
+                              limit_close = closes[limit_idx]
+                              days_since  = n - 1 - limit_idx  # 1 到 10 之间
+
+                              # 涨停后每日收盘不低于涨停日收盘价的95%
                               hold = all(
-                                  opens[j] >= limit_open * 0.995
-                                  for j in range(limit_idx + 1, len(hist))
+                                  closes[j] >= limit_close * 0.95
+                                  for j in range(limit_idx + 1, n)
                               )
+
                               if hold:
-                                  avg_vol    = vols[-6:-1].mean()
-                                  vol_ratio  = vols[-1] / avg_vol if avg_vol > 0 else 1
-                                  days_since = len(hist) - 1 - limit_idx
+                                  avg_vol   = vols[max(n-7, 0):n-1].mean()
+                                  vol_ratio = vols[-1] / avg_vol if avg_vol > 0 else 1
                                   limit_date = dates[limit_idx].strftime("%m/%d")
                                   sname = stock_names.get(scode, scode)
-                                  # 确定所属ETF板块
-                                  etf_code = stock_to_etf.get(scode)
-                                  if not etf_code:
-                                      etf_code = _guess_etf_by_code(scode)
+                                  etf_code = stock_to_etf.get(scode) or _guess_etf_by_code(scode)
                                   hold_result = {
                                       "scode":      scode,
                                       "name":       sname,
@@ -710,23 +655,22 @@ jobs:
                                       "vol_ratio":  vol_ratio,
                                       "limit_date": limit_date,
                                       "days_since": days_since,
-                                      "etf_code":   etf_code or "510300.SS",
+                                      "etf_code":   etf_code,
                                   }
 
                       # ===== B. 打板候选判断 =====
                       cand_result = None
                       etf_code_b = stock_to_etf.get(scode, "")
-                      if today_pct >= 9.8 and etf_code_b in hot_sectors:
+                      if today_pct >= 9.5 and etf_code_b in hot_sectors:
+                          n = len(closes)
                           consec = 1
-                          for i in range(len(closes) - 2, max(len(closes) - 5, 0), -1):
-                              if i < 1:
-                                  break
-                              if (closes[i] - closes[i - 1]) / closes[i - 1] * 100 >= 9.8:
+                          for i in range(n - 2, max(n - 5, 1) - 1, -1):
+                              if (closes[i] - closes[i - 1]) / closes[i - 1] * 100 >= 9.5:
                                   consec += 1
                               else:
                                   break
                           if consec <= 3:
-                              avg_vol   = vols[-6:-1].mean()
+                              avg_vol   = vols[max(n-7, 0):n-1].mean()
                               vol_ratio = vols[-1] / avg_vol if avg_vol > 0 else 1
                               score     = vol_ratio * (4 - consec)
                               cand_result = {
@@ -742,7 +686,7 @@ jobs:
                   except:
                       return None
 
-              # 并发扫描，30线程加速
+              # 并发扫描
               with ThreadPoolExecutor(max_workers=30) as executor:
                   futures = {executor.submit(check_stock, s): s for s in scan_pool}
                   for future in as_completed(futures):
@@ -770,10 +714,11 @@ jobs:
 
               out_hold = []
               if not limit_hold:
-                  out_hold = ["暂无符合条件的股票（价格3-21元，前10日涨停后高位整理）"]
+                  out_hold = ["暂无符合条件的股票（3-30元，1-10日内涨停，整理幅度<5%）"]
               else:
                   out_hold.append(
-                      f"共找到{len(limit_hold)}只（价格3-21元），按板块ETF今日涨跌幅排列：")
+                      f"共找到{len(limit_hold)}只（3-30元，涨停后1-10日整理<5%），"
+                      f"按板块ETF今日涨跌幅排列：")
                   for etf_code in sorted_sectors:
                       sector_name, etf_pct = etf_pct_map.get(etf_code, (etf_code, 0))
                       stocks = sector_groups[etf_code]
@@ -783,7 +728,7 @@ jobs:
                           f"【{sector_name}  板块{etf_arrow}{abs(etf_pct):.2f}%】"
                       )
                       for s in stocks:
-                          arrow   = "▲" if s["pct"] > 0 else "▼"
+                          arrow   = "▲" if s["pct"] > 0 else ("▼" if s["pct"] < 0 else "—")
                           vol_tag = f"  量比{s['vol_ratio']:.1f}x" if s["vol_ratio"] > 1.5 else ""
                           out_hold.append(
                               f"  {s['name']}({s['scode']}): {s['close']:.2f}"
@@ -791,7 +736,7 @@ jobs:
                               f"  [涨停:{s['limit_date']} {s['days_since']}天前]"
                           )
 
-              # ===== 格式化打板候选（板块内>=2只才算热门验证）=====
+              # ===== 格式化打板候选 =====
               qualified = [c for c in board_candidates
                            if sector_limit_count.get(c["etf_code"], 0) >= 2]
               qualified.sort(key=lambda x: x["score"], reverse=True)
@@ -801,9 +746,7 @@ jobs:
                       f"共{len(qualified)}只候选 | "
                       f"⚠️次日自行观察竞价，高开>=2%再介入 | 跌破涨停价当日止损"
                   )
-                  out_cand.append(
-                      "优先级：首板>2连板>3连板，量比越大越好，🔥=热门板块验证"
-                  )
+                  out_cand.append("优先级：首板>2连板>3连板，量比越大越好，🔥=热门板块验证")
                   for c in qualified[:10]:
                       sector_name = etf_pct_map.get(c["etf_code"], (c["etf_code"], 0))[0]
                       consec_tag  = "首板" if c["consec"] == 1 else f"{c['consec']}连板"
@@ -816,19 +759,10 @@ jobs:
                   out_cand = ["今日大池内暂无符合条件的打板候选"]
 
               log("大池扫描",
-                  f"高位整理{len(limit_hold)}只（3-21元），打板候选{len(qualified)}只")
+                  f"高位整理{len(limit_hold)}只（3-30元），打板候选{len(qualified)}只")
               return out_hold, out_cand
 
-          def _guess_etf_by_code(scode):
-              """未在预建字典中出现的股票，用代码前缀粗略匹配ETF板块"""
-              code = scode.replace(".SS", "").replace(".SZ", "")
-              if code.startswith("688"):
-                  return "588000.SS"   # 科创50
-              if code.startswith("300"):
-                  return "159949.SZ"   # 创业板50
-              return "510300.SS"       # 默认沪深300
-
-          # ===== 5. 财经新闻（Google News RSS）=====
+          # ===== 6. 财经新闻（Google News RSS）=====
           def fetch_news():
               from email.utils import parsedate_to_datetime
               queries = [
@@ -855,7 +789,7 @@ jobs:
                           try:
                               dt = parsedate_to_datetime(pub.strip())
                               import datetime as _dt
-                              bj_hour = (dt.hour + 8) % 24
+                              bj_hour  = (dt.hour + 8) % 24
                               time_str = f"{dt.month:02d}/{dt.day:02d} {bj_hour:02d}:{dt.minute:02d}"
                           except:
                               time_str = ""
@@ -869,7 +803,7 @@ jobs:
               log("新闻", f"获取{len([n for n in all_news if '•' in n])}条")
               return all_news if all_news else ["新闻获取失败"]
 
-          # ===== 6. 宏观日历 =====
+          # ===== 7. 宏观日历 =====
           def macro_calendar():
               now = datetime.datetime.utcnow()
               events = [
@@ -1038,18 +972,18 @@ jobs:
               now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
               log("启动", now)
 
-              us                         = us_tech_stocks()
-              sector_result, etf_rows    = sector_etf()
+              us                                    = us_tech_stocks()
+              sector_result, etf_rows               = sector_etf()
               strong, top_sectors_stocks, top_codes = strong_stocks(etf_rows)
-              midcap_result, midcap_stocks          = midcap_strong_stocks(etf_rows)
-              midcap                     = midcap_result
-              limit_up, candidates       = scan_large_pool(etf_rows)
-              news                       = fetch_news()
-              macro                      = macro_calendar()
+              midcap_result, midcap_stocks           = midcap_strong_stocks(etf_rows)
+              midcap                                = midcap_result
+              limit_up, candidates                  = scan_large_pool(etf_rows)
+              news                                  = fetch_news()
+              macro                                 = macro_calendar()
 
               data_text = "\n".join(
                   ["===== A股板块ETF（按涨跌幅排序）====="]+sector_result+
-                  ["\n===== 涨停后高位整理（3-21元，前10日涨停，开盘未破涨停开盘价）====="]+limit_up+
+                  ["\n===== 涨停后高位整理（3-30元，涨停后1-10日内，整理幅度<5%）====="]+limit_up+
                   ["\n===== 明日打板候选（涨停+热门板块验证+质量过滤）====="]+candidates+
                   ["\n===== 强势股筛选（涨幅前5板块龙头）====="]+strong+
                   ["\n===== 中盘强势股（100-500亿，各板块涨幅前5）====="]+midcap+
