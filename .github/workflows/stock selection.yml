@@ -32,29 +32,31 @@ jobs:
           print("获取全市场实时行情...")
           df = ak.stock_zh_a_spot_em()
 
-          # 过滤ST
-          df = df[~df['name'].str.contains("ST|st")]
+          # 检查列名
+          print("列名：", df.columns.tolist())
 
-          # 过滤次新股：假设所有上市日字段可用，可自行加条件
-          # 这里简单假设全市场股票已满足60天以上
-          df['涨幅'] = df['涨跌幅'].str.rstrip('%').astype(float)
+          # 去除ST
+          df = df[~df['名称'].str.contains("ST|st")]
+
+          # 假设次新股已超过60交易日
           # 涨停筛选
+          df['涨幅'] = df['涨跌幅'].str.rstrip('%').astype(float)
           limit_up = df[df['涨幅'] >= 9.8]
 
           print(f"符合条件股票数量: {len(limit_up)}")
 
-          # 格式化邮件
+          # 格式化邮件内容
           now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
           if len(limit_up) == 0:
               text = f"{now}\n今日暂无涨停股票"
           else:
               text = f"{now}\n今日涨停股票:\n代码 名称 最新价 涨幅\n"
               for _, row in limit_up.iterrows():
-                  text += f"{row['代码']} {row['name']} {row['最新价']} {row['涨幅']:.2f}%\n"
+                  text += f"{row['代码']} {row['名称']} {row['最新价']} {row['涨幅']:.2f}%\n"
 
           print(text)
 
-          # 发邮件
+          # 发送邮件
           sender = os.environ['EMAIL_USER']
           password = os.environ['EMAIL_PASS']
           msg = MIMEText(text, 'plain', 'utf-8')
@@ -62,10 +64,9 @@ jobs:
           msg['From'] = sender
           msg['To'] = sender
 
-          server = smtplib.SMTP_SSL("smtp.qq.com", 465)
-          server.login(sender, password)
-          server.sendmail(sender, sender, msg.as_string())
-          server.quit()
+          with smtplib.SMTP_SSL("smtp.qq.com", 465) as server:
+              server.login(sender, password)
+              server.sendmail(sender, sender, msg.as_string())
 
           print("邮件发送成功")
           PYEOF
