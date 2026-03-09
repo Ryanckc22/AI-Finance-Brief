@@ -1,0 +1,84 @@
+name: A股涨停扫描极速版
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 9 * * 1-5'   # 北京时间17:00执行
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install akshare pandas
+
+      - name: Run scanner
+        env:
+          EMAIL_USER: ${{ secrets.EMAIL_USER }}
+          EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
+        run: |
+          python - << 'PYEOF'
+
+          import akshare as ak
+          import datetime,os,smtplib
+          from email.mime.text import MIMEText
+
+          print("获取A股实时行情...")
+
+          # 获取全A股实时行情
+          df = ak.stock_zh_a_spot_em()
+
+          print("股票总数:", len(df))
+
+          results = []
+
+          for _, row in df.iterrows():
+              code = row["代码"]
+              name = row["名称"]
+              pct = row["涨跌幅"]
+
+              # 过滤ST
+              if "ST" in name or "st" in name:
+                  continue
+
+              # 今日涨停（9.8%以上近似）
+              if pct >= 9.8:
+                  results.append(f"{code} {name} {pct:.2f}%")
+
+          print("今日涨停数量:", len(results))
+
+          now = datetime.datetime.now().strftime("%Y-%m-%d")
+          text = f"A股今日涨停股票 {now}\n\n"
+
+          if not results:
+              text += "没有检测到涨停股票"
+          else:
+              for r in results:
+                  text += r + "\n"
+
+          print(text)
+
+          # 发送邮件
+          sender = os.environ["EMAIL_USER"]
+          password = os.environ["EMAIL_PASS"]
+
+          msg = MIMEText(text, "plain", "utf-8")
+          msg["Subject"] = f"A股涨停扫描 {now}"
+          msg["From"] = sender
+          msg["To"] = sender
+
+          server = smtplib.SMTP_SSL("smtp.qq.com", 465)
+          server.login(sender, password)
+          server.sendmail(sender, sender, msg.as_string())
+          server.quit()
+
+          print("邮件发送成功")
+
+          PYEOF
