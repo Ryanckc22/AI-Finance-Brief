@@ -1,59 +1,19 @@
-import akshare as ak
-import pandas as pd
-import datetime, os, smtplib, time
-from email.mime.text import MIMEText
+import yfinance as yf
 
-print("获取全市场实时行情...")
+# 随便找一只你知道最近10天内有涨停的股票测试
+scode = "600979.SS"  # 广安爱众
+hist = yf.Ticker(scode).history(period="3mo").dropna(subset=["Close","Open"])
+hist = hist.tail(15)
 
-# 自动重试
-for i in range(5):
-    try:
-        df = ak.stock_zh_a_spot_em()
-        break
-    except Exception as e:
-        print("获取失败，重试:", i+1)
-        time.sleep(5)
-else:
-    raise Exception("东方财富接口连接失败")
+closes = hist["Close"].values
+opens  = hist["Open"].values
+dates  = hist.index
+n = len(closes)
 
-print("数据条数:", len(df))
+print(f"n={n}")
+for i in range(1, n):
+    pct = (closes[i]-closes[i-1])/closes[i-1]*100
+    print(f"[{i}] {dates[i].strftime('%m/%d')}  开:{opens[i]:.2f}  收:{closes[i]:.2f}  涨:{pct:+.2f}%")
 
-# 去除 ST
-df = df[~df['名称'].str.contains("ST")]
-
-# 涨幅转换
-df['涨幅'] = pd.to_numeric(df['涨跌幅'], errors='coerce')
-
-# 涨停筛选
-limit_up = df[df['涨幅'] >= 9.8]
-
-print("涨停数量:", len(limit_up))
-
-# 邮件内容
-now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-
-text = f"A股涨停扫描 {now}\n\n"
-
-if len(limit_up) == 0:
-    text += "今日没有涨停股"
-else:
-    text += "代码 名称 最新价 涨幅\n"
-    for _, r in limit_up.iterrows():
-        text += f"{r['代码']} {r['名称']} {r['最新价']} {r['涨幅']}%\n"
-
-print(text)
-
-# 发送邮件
-sender = os.environ['EMAIL_USER']
-password = os.environ['EMAIL_PASS']
-
-msg = MIMEText(text, 'plain', 'utf-8')
-msg['Subject'] = f"A股涨停扫描 {now}"
-msg['From'] = sender
-msg['To'] = sender
-
-with smtplib.SMTP_SSL("smtp.qq.com", 465) as server:
-    server.login(sender, password)
-    server.sendmail(sender, sender, msg.as_string())
-
-print("邮件发送成功")
+print(f"\nsearch_start={max(n-11,1)}, search_end={n-1}")
+print(f"搜索范围: index {max(n-11,1)} 到 {n-2}")
