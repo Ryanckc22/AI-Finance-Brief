@@ -1,19 +1,146 @@
-import yfinance as yf
+name: A股高位整理调试
 
-# 随便找一只你知道最近10天内有涨停的股票测试
-scode = "600979.SS"  # 广安爱众
-hist = yf.Ticker(scode).history(period="3mo").dropna(subset=["Close","Open"])
-hist = hist.tail(15)
+on:
+  workflow_dispatch:
 
-closes = hist["Close"].values
-opens  = hist["Open"].values
-dates  = hist.index
-n = len(closes)
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install yfinance
+      - name: Debug
+        run: |
+          python - << 'PYEOF'
+          import yfinance as yf
+          import datetime
 
-print(f"n={n}")
-for i in range(1, n):
-    pct = (closes[i]-closes[i-1])/closes[i-1]*100
-    print(f"[{i}] {dates[i].strftime('%m/%d')}  开:{opens[i]:.2f}  收:{closes[i]:.2f}  涨:{pct:+.2f}%")
+          def log(msg):
+              print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {msg}")
 
-print(f"\nsearch_start={max(n-11,1)}, search_end={n-1}")
-print(f"搜索范围: index {max(n-11,1)} 到 {n-2}")
+          # ===== 测试1：验证广安爱众原始数据 =====
+          log("===== 测试1：广安爱众 600979.SS 原始数据 =====")
+          try:
+              hist = yf.Ticker("600979.SS").history(period="3mo").dropna(subset=["Close","Open"])
+              log(f"获取到 {len(hist)} 条数据")
+              tail = hist.tail(15)
+              closes = tail["Close"].values
+              opens  = tail["Open"].values
+              dates  = tail.index
+              n = len(closes)
+              log(f"tail(15) 后 n={n}")
+              log(f"搜索窗口: search_start={max(n-11,1)}, search_end={n-1}, 即index {max(n-11,1)} 到 {n-2}")
+              log("最近15天数据：")
+              for i in range(n):
+                  pct = (closes[i]-closes[i-1])/closes[i-1]*100 if i > 0 else 0
+                  flag = " ★涨停!" if pct >= 9.5 else ""
+                  print(f"  [{i:2d}] {dates[i].strftime('%m/%d')}  开:{opens[i]:.2f}  收:{closes[i]:.2f}  涨:{pct:+.2f}%{flag}")
+          except Exception as e:
+              log(f"失败: {e}")
+
+          # ===== 测试2：手动跑筛选逻辑，看哪步被过滤 =====
+          log("\n===== 测试2：逐步跑筛选逻辑 =====")
+          test_stocks = ["600979.SS", "601857.SS", "000001.SZ", "300750.SZ", "688981.SS"]
+          for scode in test_stocks:
+              try:
+                  hist = yf.Ticker(scode).history(period="3mo").dropna(subset=["Close","Open","Volume"])
+                  if len(hist) == 0:
+                      print(f"  {scode}: 无数据")
+                      continue
+                  if len(hist) < 60:
+                      print(f"  {scode}: 次新股，只有{len(hist)}天数据")
+                      continue
+                  tail = hist.tail(15)
+                  closes = tail["Close"].values
+                  opens  = tail["Open"].values
+                  n = len(closes)
+                  dates  = tail.index
+
+                  # 找最早涨停
+                  first_limit_idx = None
+                  search_start = max(n-11, 1)
+                  search_end   = n-1
+                  for i in range(search_start, search_end):
+                      if i < 1: continue
+                      pct = (closes[i]-closes[i-1])/closes[i-1]*100
+                      if pct >= 9.5:
+                          first_limit_idx = i
+                          break
+
+                  if first_limit_idx is None:
+                      # 打印实际最大涨幅供参考
+                      max_pct = max((closes[i]-closes[i-1])/closes[i-1]*100 for i in range(search_start, search_end) if i>=1)
+                      print(f"  {scode}: 10日内无涨停，窗口内最大涨幅={max_pct:.2f}%")
+                      continue
+
+                  base_open  = opens[first_limit_idx]
+                  base_date  = dates[first_limit_idx].strftime("%m/%d")
+
+                  # 检查每日收盘
+                  fail_day = None
+                  for j in range(first_limit_idx+1, n):
+                      if closes[j] < base_open:
+                          fail_day = f"{dates[j].strftime('%m/%d')} 收盘{closes[j]:.2f} < 基准{base_open:.2f}"
+                          break
+
+                  if fail_day:
+                      print(f"  {scode}: 涨停日{base_date}(开盘{base_open:.2f})，整理失败于 {fail_day}")
+                  else:
+                      print(f"  {scode}: ✅ 符合条件！涨停日{base_date} 基准开盘{base_open:.2f}")
+
+              except Exception as e:
+                  print(f"  {scode}: 异常 {e}")
+
+          # ===== 测试3：扫描少量股票看命中情况 =====
+          log("\n===== 测试3：扫描前200只上交所股票 =====")
+          hit = 0
+          no_data = 0
+          new_stock = 0
+          no_limit = 0
+          hold_fail = 0
+
+          for i in range(600000, 600200):
+              scode = f"{i}.SS"
+              try:
+                  hist = yf.Ticker(scode).history(period="3mo").dropna(subset=["Close","Open","Volume"])
+                  if len(hist) == 0:
+                      no_data += 1
+                      continue
+                  if len(hist) < 60:
+                      new_stock += 1
+                      continue
+                  tail = hist.tail(15)
+                  closes = tail["Close"].values
+                  opens  = tail["Open"].values
+                  dates  = tail.index
+                  n = len(closes)
+
+                  first_limit_idx = None
+                  search_start = max(n-11, 1)
+                  for i_s in range(search_start, n-1):
+                      if i_s < 1: continue
+                      if (closes[i_s]-closes[i_s-1])/closes[i_s-1]*100 >= 9.5:
+                          first_limit_idx = i_s
+                          break
+
+                  if first_limit_idx is None:
+                      no_limit += 1
+                      continue
+
+                  base_open = opens[first_limit_idx]
+                  hold = all(closes[j] >= base_open for j in range(first_limit_idx+1, n))
+                  if not hold:
+                      hold_fail += 1
+                      continue
+
+                  hit += 1
+                  print(f"  ✅ {scode} 涨停日:{dates[first_limit_idx].strftime('%m/%d')} 基准:{base_open:.2f} 今收:{closes[-1]:.2f}")
+
+              except:
+                  no_data += 1
+
+          log(f"前200只结果: 命中{hit} 无数据{no_data} 次新{new_stock} 无涨停{no_limit} 整理失败{hold_fail}")
+          PYEOF
