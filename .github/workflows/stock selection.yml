@@ -1,7 +1,9 @@
-name: A股涨停扫描测试
+name: A股涨停扫描
 
 on:
   workflow_dispatch:
+  schedule:
+    - cron: '0 9 * * 1-5'   # 北京时间17:00
 
 jobs:
   scan:
@@ -15,7 +17,7 @@ jobs:
           python-version: '3.11'
 
       - name: Install dependencies
-        run: pip install akshare yfinance
+        run: pip install akshare pandas
 
       - name: Run scanner
         env:
@@ -24,78 +26,47 @@ jobs:
         run: |
           python - << 'PYEOF'
 
-          import yfinance as yf
           import akshare as ak
           import datetime,os,smtplib
           from email.mime.text import MIMEText
-          from concurrent.futures import ThreadPoolExecutor,as_completed
 
-          print("生成股票池...")
+          print("获取A股列表...")
 
-          pool=[]
+          df = ak.stock_info_a_code_name()
 
-          # 上交所
-          for i in range(600000,604000):
-              pool.append(f"{i}.SS")
+          stocks = []
 
-          # 深交所
-          for i in range(1,4000):
-              pool.append(f"{i:06d}.SZ")
+          for _,row in df.iterrows():
 
-          # 创业板
-          for i in range(300000,302000):
-              pool.append(f"{i}.SZ")
+              code = str(row["code"]).zfill(6)
+              name = row["name"]
 
-          # 科创板
-          for i in range(688000,689000):
-              pool.append(f"{i}.SS")
+              if "ST" in name or "st" in name:
+                  continue
 
-          print("候选股票数量:",len(pool))
+              stocks.append((code,name))
+
+          print("股票数量:",len(stocks))
 
 
-          print("获取ST名单...")
-
-          st_set=set()
-
-          try:
-
-              df=ak.stock_info_a_code_name()
-
-              for _,row in df.iterrows():
-
-                  if "ST" in row["name"] or "st" in row["name"]:
-
-                      code=str(row["code"]).zfill(6)
-
-                      st_set.add(code+".SS")
-                      st_set.add(code+".SZ")
-
-              print("ST数量:",len(st_set))
-
-          except:
-
-              print("ST获取失败，跳过ST过滤")
-
-
-          def check_stock(code):
+          def is_limit_up(code):
 
               try:
 
-                  if code in st_set:
+                  hist = ak.stock_zh_a_hist(
+                      symbol=code,
+                      period="daily",
+                      adjust=""
+                  )
+
+                  if len(hist) < 60:
                       return None
 
-                  hist=yf.Ticker(code).history(period="3mo")
+                  close = hist["收盘"].values
+                  pct = (close[-1]-close[-2]) / close[-2] * 100
 
-                  if len(hist)<60:
-                      return None
-
-                  close=hist["Close"].values
-
-                  pct=(close[-1]-close[-2])/close[-2]*100
-
-                  if pct>=9.8:
-
-                      return f"{code} {pct:.2f}%"
+                  if pct >= 9.8:
+                      return pct
 
               except:
                   return None
@@ -103,50 +74,45 @@ jobs:
 
           print("开始扫描...")
 
-          results=[]
+          results = []
 
-          with ThreadPoolExecutor(max_workers=30) as exe:
+          for code,name in stocks:
 
-              futures=[exe.submit(check_stock,s) for s in pool]
+              pct = is_limit_up(code)
 
-              for f in as_completed(futures):
+              if pct:
+                  results.append(f"{code} {name} {pct:.2f}%")
 
-                  r=f.result()
-
-                  if r:
-                      results.append(r)
+          print("涨停数量:",len(results))
 
 
-          print("涨停股票:",len(results))
+          now = datetime.datetime.now().strftime("%Y-%m-%d")
 
-
-          now=datetime.datetime.now().strftime("%Y-%m-%d")
-
-          text="A股今日涨停股票 "+now+"\n\n"
+          text = "A股今日涨停股票 "+now+"\n\n"
 
           if len(results)==0:
 
-              text+="没有检测到涨停股票"
+              text += "没有检测到涨停股票"
 
           else:
 
               for r in results:
-                  text+=r+"\n"
+                  text += r+"\n"
 
 
           print(text)
 
 
-          sender=os.environ["EMAIL_USER"]
-          password=os.environ["EMAIL_PASS"]
+          sender = os.environ["EMAIL_USER"]
+          password = os.environ["EMAIL_PASS"]
 
-          msg=MIMEText(text,"plain","utf-8")
+          msg = MIMEText(text,"plain","utf-8")
 
-          msg["Subject"]="A股涨停扫描 "+now
-          msg["From"]=sender
-          msg["To"]=sender
+          msg["Subject"] = "A股涨停扫描 "+now
+          msg["From"] = sender
+          msg["To"] = sender
 
-          server=smtplib.SMTP_SSL("smtp.qq.com",465)
+          server = smtplib.SMTP_SSL("smtp.qq.com",465)
 
           server.login(sender,password)
 
