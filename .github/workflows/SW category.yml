@@ -1,0 +1,24 @@
+name: 获取申万二级行业列表
+
+on:
+  workflow_dispatch:
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Install dependencies
+        run: pip install akshare
+      - name: Fetch industry list
+        run: |
+          python - << 'PYEOF'
+          import akshare as ak
+
+          # 申万二级行业列表
+          df = ak.sw_index_second_info()
+          print(f"共 {len(df)} 个申万二级行业\n")
+          print(df.to_string(index=False))
+          PYEOF
