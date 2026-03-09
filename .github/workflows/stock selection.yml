@@ -1,146 +1,329 @@
-name: A股高位整理调试
+name: A股高位整理扫描
 
 on:
+  schedule:
+    - cron: '30 7 * * 1-5'   # 北京时间 15:30 收盘后运行（周一到周五）
   workflow_dispatch:
 
 jobs:
-  debug:
+  scan:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
       - name: Install dependencies
-        run: pip install yfinance
-      - name: Debug
+        run: pip install yfinance akshare requests
+      - name: Run scanner
+        env:
+          EMAIL_USER: ${{ secrets.EMAIL_USER }}
+          EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
         run: |
           python - << 'PYEOF'
+          import datetime, smtplib, os, time
+          from email.mime.text import MIMEText
+          from email.mime.multipart import MIMEMultipart
           import yfinance as yf
-          import datetime
+          import pandas as pd
+          import akshare as ak
 
           def log(msg):
               print(f"[{datetime.datetime.now().strftime('%H:%M:%S')}] {msg}")
 
-          # ===== 测试1：验证广安爱众原始数据 =====
-          log("===== 测试1：广安爱众 600979.SS 原始数据 =====")
-          try:
-              hist = yf.Ticker("600979.SS").history(period="3mo").dropna(subset=["Close","Open"])
-              log(f"获取到 {len(hist)} 条数据")
-              tail = hist.tail(15)
-              closes = tail["Close"].values
-              opens  = tail["Open"].values
-              dates  = tail.index
-              n = len(closes)
-              log(f"tail(15) 后 n={n}")
-              log(f"搜索窗口: search_start={max(n-11,1)}, search_end={n-1}, 即index {max(n-11,1)} 到 {n-2}")
-              log("最近15天数据：")
-              for i in range(n):
-                  pct = (closes[i]-closes[i-1])/closes[i-1]*100 if i > 0 else 0
-                  flag = " ★涨停!" if pct >= 9.5 else ""
-                  print(f"  [{i:2d}] {dates[i].strftime('%m/%d')}  开:{opens[i]:.2f}  收:{closes[i]:.2f}  涨:{pct:+.2f}%{flag}")
-          except Exception as e:
-              log(f"失败: {e}")
+          # ===== 1. 用akshare获取全量A股代码和名称 =====
+          def build_stock_pool():
+              def to_yf(code):
+                  code = str(code).strip().zfill(6)
+                  return code + '.SS' if code.startswith(('6', '5')) else code + '.SZ'
 
-          # ===== 测试2：手动跑筛选逻辑，看哪步被过滤 =====
-          log("\n===== 测试2：逐步跑筛选逻辑 =====")
-          test_stocks = ["600979.SS", "601857.SS", "000001.SZ", "300750.SZ", "688981.SS"]
-          for scode in test_stocks:
               try:
-                  hist = yf.Ticker(scode).history(period="3mo").dropna(subset=["Close","Open","Volume"])
-                  if len(hist) == 0:
-                      print(f"  {scode}: 无数据")
-                      continue
-                  if len(hist) < 60:
-                      print(f"  {scode}: 次新股，只有{len(hist)}天数据")
-                      continue
-                  tail = hist.tail(15)
-                  closes = tail["Close"].values
-                  opens  = tail["Open"].values
-                  n = len(closes)
-                  dates  = tail.index
+                  df = ak.stock_info_a_code_name()
+                  pool = {}
+                  for _, row in df.iterrows():
+                      yf_code = to_yf(str(row["code"]))
+                      pool[yf_code] = row["name"]
+                  log(f"股票池: akshare获取 {len(pool)} 只")
+                  return pool
+              except Exception as e:
+                  log(f"股票池获取失败: {e}")
+                  return {}
 
-                  # 找最早涨停
+          # ===== 2. 分批用yfinance批量下载历史数据 =====
+          def batch_download(symbols, batch_size=200):
+              """
+              yf.download() 一次传入多个代码批量下载，比逐只快很多。
+              分批处理避免单次请求过大。
+              返回 dict: {scode: DataFrame}
+              """
+              all_data = {}
+              batches = [symbols[i:i+batch_size] for i in range(0, len(symbols), batch_size)]
+              log(f"分 {len(batches)} 批下载，每批 {batch_size} 只...")
+
+              for idx, batch in enumerate(batches):
+                  try:
+                      raw = yf.download(
+                          batch,
+                          period="3mo",
+                          interval="1d",
+                          group_by="ticker",
+                          auto_adjust=True,
+                          progress=False,
+                          threads=True,
+                      )
+                      # 解析每只股票的数据
+                      if len(batch) == 1:
+                          # 单只股票时 yf.download 返回格式不同
+                          scode = batch[0]
+                          if not raw.empty:
+                              all_data[scode] = raw.dropna(subset=["Close", "Open"])
+                      else:
+                          for scode in batch:
+                              try:
+                                  df = raw[scode].dropna(subset=["Close", "Open"])
+                                  if not df.empty:
+                                      all_data[scode] = df
+                              except:
+                                  pass
+                      log(f"  批次 {idx+1}/{len(batches)} 完成，有效数据 {len(all_data)} 只")
+                  except Exception as e:
+                      log(f"  批次 {idx+1} 失败: {e}")
+                  time.sleep(0.5)  # 避免请求过于频繁
+
+              log(f"下载完成，共获取 {len(all_data)} 只有效数据")
+              return all_data
+
+          # ===== 3. 对单只股票跑筛选逻辑 =====
+          def check_stock(scode, name, df):
+              """
+              筛选逻辑：
+              ① 取最近15个交易日
+              ② 在第1到第10个交易日前（closes[-11] 到 closes[-2]）
+                 找【最早的】涨停日（涨幅 >= 9.5%）
+              ③ 基准线 = 该涨停日的开盘价
+              ④ 涨停次日起到今日，每日收盘 >= 基准线
+              """
+              try:
+                  if len(df) < 11:
+                      return None
+
+                  hist = df.tail(15)
+                  closes = hist["Close"].values
+                  opens  = hist["Open"].values
+                  dates  = hist.index
+                  n = len(closes)
+
+                  if n < 11:
+                      return None
+
+                  # 在最近10个交易日内（不含今日）找【最早的】涨停
+                  # range 从早到晚，第一个命中 = 最早的涨停
                   first_limit_idx = None
-                  search_start = max(n-11, 1)
-                  search_end   = n-1
+                  search_start = max(n - 11, 1)  # 10天前
+                  search_end   = n - 1            # 不含今日
+
                   for i in range(search_start, search_end):
-                      if i < 1: continue
-                      pct = (closes[i]-closes[i-1])/closes[i-1]*100
-                      if pct >= 9.5:
+                      if i < 1:
+                          continue
+                      day_pct = (closes[i] - closes[i-1]) / closes[i-1] * 100
+                      if day_pct >= 9.5:
                           first_limit_idx = i
                           break
 
                   if first_limit_idx is None:
-                      # 打印实际最大涨幅供参考
-                      max_pct = max((closes[i]-closes[i-1])/closes[i-1]*100 for i in range(search_start, search_end) if i>=1)
-                      print(f"  {scode}: 10日内无涨停，窗口内最大涨幅={max_pct:.2f}%")
-                      continue
+                      return None
 
+                  # 基准线 = 最早涨停日的开盘价
                   base_open  = opens[first_limit_idx]
                   base_date  = dates[first_limit_idx].strftime("%m/%d")
+                  days_since = n - 1 - first_limit_idx
 
-                  # 检查每日收盘
-                  fail_day = None
-                  for j in range(first_limit_idx+1, n):
-                      if closes[j] < base_open:
-                          fail_day = f"{dates[j].strftime('%m/%d')} 收盘{closes[j]:.2f} < 基准{base_open:.2f}"
-                          break
-
-                  if fail_day:
-                      print(f"  {scode}: 涨停日{base_date}(开盘{base_open:.2f})，整理失败于 {fail_day}")
-                  else:
-                      print(f"  {scode}: ✅ 符合条件！涨停日{base_date} 基准开盘{base_open:.2f}")
-
-              except Exception as e:
-                  print(f"  {scode}: 异常 {e}")
-
-          # ===== 测试3：扫描少量股票看命中情况 =====
-          log("\n===== 测试3：扫描前200只上交所股票 =====")
-          hit = 0
-          no_data = 0
-          new_stock = 0
-          no_limit = 0
-          hold_fail = 0
-
-          for i in range(600000, 600200):
-              scode = f"{i}.SS"
-              try:
-                  hist = yf.Ticker(scode).history(period="3mo").dropna(subset=["Close","Open","Volume"])
-                  if len(hist) == 0:
-                      no_data += 1
-                      continue
-                  if len(hist) < 60:
-                      new_stock += 1
-                      continue
-                  tail = hist.tail(15)
-                  closes = tail["Close"].values
-                  opens  = tail["Open"].values
-                  dates  = tail.index
-                  n = len(closes)
-
-                  first_limit_idx = None
-                  search_start = max(n-11, 1)
-                  for i_s in range(search_start, n-1):
-                      if i_s < 1: continue
-                      if (closes[i_s]-closes[i_s-1])/closes[i_s-1]*100 >= 9.5:
-                          first_limit_idx = i_s
-                          break
-
-                  if first_limit_idx is None:
-                      no_limit += 1
-                      continue
-
-                  base_open = opens[first_limit_idx]
-                  hold = all(closes[j] >= base_open for j in range(first_limit_idx+1, n))
+                  # 涨停次日起到今日，每日收盘 >= 基准开盘价
+                  hold = all(
+                      closes[j] >= base_open
+                      for j in range(first_limit_idx + 1, n)
+                  )
                   if not hold:
-                      hold_fail += 1
-                      continue
+                      return None
 
-                  hit += 1
-                  print(f"  ✅ {scode} 涨停日:{dates[first_limit_idx].strftime('%m/%d')} 基准:{base_open:.2f} 今收:{closes[-1]:.2f}")
+                  # 今日涨幅
+                  today_pct = (closes[-1] - closes[-2]) / closes[-2] * 100
 
+                  # 量比
+                  vols = hist["Volume"].values
+                  avg_vol   = vols[max(n-6, 0):n-1].mean()
+                  vol_ratio = vols[-1] / avg_vol if avg_vol > 0 else 1.0
+
+                  return {
+                      "scode":      scode,
+                      "name":       name,
+                      "close":      closes[-1],
+                      "today_pct":  today_pct,
+                      "vol_ratio":  vol_ratio,
+                      "base_open":  base_open,
+                      "base_date":  base_date,
+                      "days_since": days_since,
+                  }
               except:
-                  no_data += 1
+                  return None
 
-          log(f"前200只结果: 命中{hit} 无数据{no_data} 次新{new_stock} 无涨停{no_limit} 整理失败{hold_fail}")
+          # ===== 4. 主扫描 =====
+          def scan():
+              # 第一步：获取股票池
+              pool = build_stock_pool()
+              if not pool:
+                  log("股票池为空，退出")
+                  return []
+
+              symbols = list(pool.keys())
+
+              # 第二步：批量下载历史数据
+              t0 = time.time()
+              all_data = batch_download(symbols)
+              log(f"批量下载耗时 {time.time()-t0:.0f} 秒")
+
+              # 第三步：逐只跑筛选逻辑（纯内存计算，极快）
+              results = []
+              for scode, df in all_data.items():
+                  name = pool.get(scode, scode)
+                  res = check_stock(scode, name, df)
+                  if res:
+                      results.append(res)
+
+              # 按今日涨幅降序
+              results.sort(key=lambda x: x["today_pct"], reverse=True)
+              log(f"筛选完成，共 {len(results)} 只符合条件")
+              return results
+
+          # ===== 5. 格式化输出 =====
+          def format_results(results):
+              now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+              lines = []
+              lines.append(f"扫描时间：{now}")
+              lines.append(f"符合条件：共 {len(results)} 只")
+              lines.append("=" * 60)
+              lines.append("条件：10日内出现涨停，此后每日收盘 >= 涨停日开盘价")
+              lines.append("=" * 60)
+
+              if not results:
+                  lines.append("今日暂无符合条件的股票")
+                  return "\n".join(lines)
+
+              lines.append(f"{'#':>3}  {'名称':<8} {'代码':<12} {'现价':>6}  "
+                           f"{'今日':>7}  {'量比':>5}  {'基准开盘':>8}  {'涨停日'}  {'距今'}")
+              lines.append("-" * 70)
+
+              for i, s in enumerate(results, 1):
+                  arrow = "▲" if s["today_pct"] > 0 else ("▼" if s["today_pct"] < 0 else " ")
+                  lines.append(
+                      f"{i:>3}. {s['name']:<8} {s['scode']:<12} "
+                      f"{s['close']:>6.2f}  "
+                      f"{arrow}{abs(s['today_pct']):>5.2f}%  "
+                      f"{s['vol_ratio']:>4.1f}x  "
+                      f"{s['base_open']:>8.2f}  "
+                      f"{s['base_date']}  "
+                      f"{s['days_since']}天前"
+                  )
+              return "\n".join(lines)
+
+          # ===== 6. HTML =====
+          def to_html(results):
+              now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
+              rows_html = ""
+              for i, s in enumerate(results, 1):
+                  arrow = "▲" if s["today_pct"] > 0 else ("▼" if s["today_pct"] < 0 else "—")
+                  color = "#c0392b" if s["today_pct"] > 0 else ("#27ae60" if s["today_pct"] < 0 else "#333")
+                  rows_html += f"""
+                  <tr style='border-bottom:1px solid #f0f0f0;'>
+                    <td style='padding:6px 8px;color:#999;'>{i}</td>
+                    <td style='padding:6px 8px;font-weight:bold;'>{s['name']}</td>
+                    <td style='padding:6px 8px;color:#666;font-family:monospace;font-size:12px;'>{s['scode']}</td>
+                    <td style='padding:6px 8px;text-align:right;'>{s['close']:.2f}</td>
+                    <td style='padding:6px 8px;text-align:right;color:{color};font-weight:bold;'>
+                        {arrow}{abs(s['today_pct']):.2f}%</td>
+                    <td style='padding:6px 8px;text-align:right;color:#e67e22;'>{s['vol_ratio']:.1f}x</td>
+                    <td style='padding:6px 8px;text-align:right;color:#2980b9;'>{s['base_open']:.2f}</td>
+                    <td style='padding:6px 8px;color:#888;'>{s['base_date']}</td>
+                    <td style='padding:6px 8px;color:#888;'>{s['days_since']}天前</td>
+                  </tr>"""
+
+              empty = "<tr><td colspan='9' style='padding:20px;text-align:center;color:#999;'>今日暂无符合条件的股票</td></tr>"
+
+              return f"""<!DOCTYPE html><html><head>
+              <meta charset='utf-8'>
+              <meta name='viewport' content='width=device-width,initial-scale=1.0'>
+              </head>
+              <body style='font-family:-apple-system,BlinkMacSystemFont,sans-serif;
+                           max-width:960px;margin:0 auto;padding:16px;background:#f0f2f5;'>
+                <div style='background:#fff;border-radius:12px;padding:20px;
+                            box-shadow:0 2px 8px rgba(0,0,0,0.08);'>
+                  <h1 style='font-size:20px;color:#1a1a1a;border-bottom:3px solid #c0392b;
+                             padding-bottom:10px;margin-top:0;'>
+                    📊 A股高位整理扫描报告
+                  </h1>
+                  <p style='color:#666;font-size:13px;margin:0 0 4px;'>扫描时间：{now}</p>
+                  <p style='color:#666;font-size:13px;margin:0 0 16px;'>
+                    筛选条件：10个交易日内出现涨停，此后每日收盘价 ≥ 涨停日开盘价
+                  </p>
+                  <p style='color:#c0392b;font-size:15px;font-weight:bold;margin:0 0 12px;'>
+                    共找到 {len(results)} 只符合条件的股票
+                  </p>
+                  <div style='overflow-x:auto;'>
+                  <table style='width:100%;border-collapse:collapse;font-size:13px;'>
+                    <thead>
+                      <tr style='background:#f8f8f8;'>
+                        <th style='padding:8px;text-align:left;color:#999;font-weight:normal;'>#</th>
+                        <th style='padding:8px;text-align:left;'>名称</th>
+                        <th style='padding:8px;text-align:left;'>代码</th>
+                        <th style='padding:8px;text-align:right;'>现价</th>
+                        <th style='padding:8px;text-align:right;'>今日涨幅</th>
+                        <th style='padding:8px;text-align:right;'>量比</th>
+                        <th style='padding:8px;text-align:right;'>基准开盘</th>
+                        <th style='padding:8px;text-align:left;'>涨停日</th>
+                        <th style='padding:8px;text-align:left;'>距今</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {rows_html if results else empty}
+                    </tbody>
+                  </table>
+                  </div>
+                  <div style='font-size:11px;color:#bbb;border-top:1px solid #eee;
+                              margin-top:16px;padding-top:10px;'>
+                    本报告由程序自动生成，不构成投资建议。止损参考：跌破涨停日开盘价离场。
+                  </div>
+                </div>
+              </body></html>"""
+
+          # ===== 7. 发邮件 =====
+          def send_mail(subject, plain_text, html_text):
+              sender   = os.environ["EMAIL_USER"]
+              password = os.environ["EMAIL_PASS"]
+              msg = MIMEMultipart("alternative")
+              msg["Subject"] = subject
+              msg["From"]    = sender
+              msg["To"]      = sender
+              msg.attach(MIMEText(plain_text, "plain", "utf-8"))
+              msg.attach(MIMEText(html_text,  "html",  "utf-8"))
+              with smtplib.SMTP_SSL("smtp.qq.com", 465) as s:
+                  s.login(sender, password)
+                  s.sendmail(sender, sender, msg.as_string())
+              log("邮件发送成功")
+
+          # ===== 主程序 =====
+          def main():
+              log("启动 A股高位整理扫描")
+              t0 = time.time()
+
+              results    = scan()
+              plain_text = format_results(results)
+              html_text  = to_html(results)
+
+              log(f"\n{plain_text}")
+              log(f"总耗时 {time.time()-t0:.0f} 秒")
+
+              now     = datetime.datetime.now().strftime("%Y-%m-%d")
+              subject = f"A股高位整理 {now}  共{len(results)}只"
+              send_mail(subject, plain_text, html_text)
+
+          main()
           PYEOF
