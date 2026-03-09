@@ -1,72 +1,59 @@
-name: A股今日涨停扫描（极速版）
+import akshare as ak
+import pandas as pd
+import datetime, os, smtplib, time
+from email.mime.text import MIMEText
 
-on:
-  workflow_dispatch:
-  schedule:
-    - cron: '0 9 * * 1-5'   # 北京时间收盘后运行
+print("获取全市场实时行情...")
 
-jobs:
-  scan:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+# 自动重试
+for i in range(5):
+    try:
+        df = ak.stock_zh_a_spot_em()
+        break
+    except Exception as e:
+        print("获取失败，重试:", i+1)
+        time.sleep(5)
+else:
+    raise Exception("东方财富接口连接失败")
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+print("数据条数:", len(df))
 
-      - name: Install dependencies
-        run: pip install akshare pandas numpy
+# 去除 ST
+df = df[~df['名称'].str.contains("ST")]
 
-      - name: Run scan
-        env:
-          EMAIL_USER: ${{ secrets.EMAIL_USER }}
-          EMAIL_PASS: ${{ secrets.EMAIL_PASS }}
-        run: |
-          python - << 'PYEOF'
-          import akshare as ak
-          import pandas as pd
-          import datetime, os, smtplib
-          from email.mime.text import MIMEText
+# 涨幅转换
+df['涨幅'] = pd.to_numeric(df['涨跌幅'], errors='coerce')
 
-          print("获取全市场实时行情...")
-          df = ak.stock_zh_a_spot_em()
+# 涨停筛选
+limit_up = df[df['涨幅'] >= 9.8]
 
-          # 检查列名
-          print("列名：", df.columns.tolist())
+print("涨停数量:", len(limit_up))
 
-          # 去除ST
-          df = df[~df['名称'].str.contains("ST|st")]
+# 邮件内容
+now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
 
-          # 假设次新股已超过60交易日
-          # 涨停筛选
-          df['涨幅'] = df['涨跌幅'].str.rstrip('%').astype(float)
-          limit_up = df[df['涨幅'] >= 9.8]
+text = f"A股涨停扫描 {now}\n\n"
 
-          print(f"符合条件股票数量: {len(limit_up)}")
+if len(limit_up) == 0:
+    text += "今日没有涨停股"
+else:
+    text += "代码 名称 最新价 涨幅\n"
+    for _, r in limit_up.iterrows():
+        text += f"{r['代码']} {r['名称']} {r['最新价']} {r['涨幅']}%\n"
 
-          # 格式化邮件内容
-          now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
-          if len(limit_up) == 0:
-              text = f"{now}\n今日暂无涨停股票"
-          else:
-              text = f"{now}\n今日涨停股票:\n代码 名称 最新价 涨幅\n"
-              for _, row in limit_up.iterrows():
-                  text += f"{row['代码']} {row['名称']} {row['最新价']} {row['涨幅']:.2f}%\n"
+print(text)
 
-          print(text)
+# 发送邮件
+sender = os.environ['EMAIL_USER']
+password = os.environ['EMAIL_PASS']
 
-          # 发送邮件
-          sender = os.environ['EMAIL_USER']
-          password = os.environ['EMAIL_PASS']
-          msg = MIMEText(text, 'plain', 'utf-8')
-          msg['Subject'] = f"A股今日涨停扫描 {now}"
-          msg['From'] = sender
-          msg['To'] = sender
+msg = MIMEText(text, 'plain', 'utf-8')
+msg['Subject'] = f"A股涨停扫描 {now}"
+msg['From'] = sender
+msg['To'] = sender
 
-          with smtplib.SMTP_SSL("smtp.qq.com", 465) as server:
-              server.login(sender, password)
-              server.sendmail(sender, sender, msg.as_string())
+with smtplib.SMTP_SSL("smtp.qq.com", 465) as server:
+    server.login(sender, password)
+    server.sendmail(sender, sender, msg.as_string())
 
-          print("邮件发送成功")
-          PYEOF
+print("邮件发送成功")
