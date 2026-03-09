@@ -1,4 +1,4 @@
-name: AI Finance Daily
+name: AI Finance Daily stock selection
 
 on:
   schedule:
